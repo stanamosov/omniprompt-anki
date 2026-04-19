@@ -2,7 +2,7 @@
 Translate this French word "{French Word}" to English. Answer with translation only.
 
 [[[Definition]]]
-Explain this Polis workd "{Polish Word}". Answer with definition only, do not add any other comments.
+Explain this Polish word "{Polish Word}". Answer with definition only, do not add any other comments.
 
 [[[Synonyms]]]
 What are synonyms for this French word "{French Word}". Answer with list of synonyms only.
@@ -16,6 +16,24 @@ Then provide:
 - A list of 3 synonyms.
 - A contextual sentence using the word.
 - A short mnemonic or memory trick to remember the word.
+
+[[[Output To Multiple Fields]]]
+"{Simplified} ({Pinyin})" can be used in different ways, give 2-4 example sentences.
+Follow this formatting, output in code blocks:
+
+```Sentences_Hanyu
+句子1<br/>句子2...
+```
+```Sentences_Pinyin
+Jùzǐ1<br/>Jùzǐ2...
+```
+```Sentences_English
+literal translation1<br/>literal translation2...
+```
+
+Try to use words that are similar in HSK level. Try to output fewer sentences if the word is simple/self explanatory. Include one complex sentence or colloquial slang.
+
+Do not explain or provide additional output. Don't number or label the sentences.
 
 [[[Extra]]]
 Напиши подробное обьяснение для французского слова "{French Word}" и отформатируй ответ в Markdown. Объяснение должно включать:

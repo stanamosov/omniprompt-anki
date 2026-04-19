@@ -1099,9 +1099,9 @@ class SettingsDialog(QDialog):
             default_models = [
                 "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4o", 
                 "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano",
-                "gpt-5",  # Generic GPT-5
+                "gpt-5",
                 "o3-mini", "o1-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"
-            ]  # <-- ADDED THIS CLOSING BRACKET
+            ]
         elif provider == "deepseek":
             default_models = ["deepseek-chat", "deepseek-reasoner"]
         elif provider == "gemini":
@@ -2119,8 +2119,9 @@ class AboutDialog(QDialog):
             "<p>Version: 1.1.5</p>"
             "<p><a href='https://ankiweb.net/shared/review/1383162606'>Rate add-on on AnkiWeb</a></p>"
             "<p>For documentation, visit:</p>"
-            "<p><a href='https://github.com/stanamosov/omniprompt-anki'>GitHub Repo</a></p>"
-            "<p><a href='https://codeberg.org/stanamosov/omniprompt-anki'>Codeberg Repo</a></p>"
+            "<p><a href='https://github.com/stanamosov/omniprompt-anki'>GitHub Repository</a></p>"
+            "<p><a href='https://codeberg.org/stanamosov/omniprompt-anki'>Codeberg Repository</a></p>"
+            "<p><b>User Guide:</b> See docs/user-guide.md in the add-on folder</p>"
             "<p>Credits: Stanislav Amosov</p>"
         )
         lbl = QLabel(about_text)
