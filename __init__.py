@@ -60,7 +60,7 @@ AI_PROVIDERS = [
 ]
 
 DEFAULT_CONFIG = {
-    "_version": 1.1,
+    "_version": 1.3,
     "AI_PROVIDER": "ollama",
     "OPENAI_MODEL": "gpt-4o-mini",
     "DEEPSEEK_MODEL": "deepseek-chat",
@@ -71,6 +71,14 @@ DEFAULT_CONFIG = {
     "LMSTUDIO_MODEL": "local-model",
     "OLLAMA_BASE_URL": "http://localhost:11434",
     "LMSTUDIO_BASE_URL": "http://localhost:1234",
+    # Provider test URLs (editable by user)
+    "OPENAI_TEST_URL": "https://api.openai.com/v1/chat/completions",
+    "DEEPSEEK_TEST_URL": "https://api.deepseek.com/chat/completions",
+    "GEMINI_TEST_URL": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    "ANTHROPIC_TEST_URL": "https://api.anthropic.com/v1/messages",
+    "XAI_TEST_URL": "https://api.x.ai/v1/chat/completions",
+    # OpenAI API version selector
+    "OPENAI_API_VERSION": "modern",  # modern, legacy, or auto
     # Now includes all supported providers
     "API_KEYS": {
         # "openai": "...",
@@ -119,6 +127,12 @@ CONFIG_SCHEMA = {
         "LMSTUDIO_MODEL": {"type": "string"},
         "OLLAMA_BASE_URL": {"type": "string"},
         "LMSTUDIO_BASE_URL": {"type": "string"},
+        "OPENAI_TEST_URL": {"type": "string"},
+        "DEEPSEEK_TEST_URL": {"type": "string"},
+        "GEMINI_TEST_URL": {"type": "string"},
+        "ANTHROPIC_TEST_URL": {"type": "string"},
+        "XAI_TEST_URL": {"type": "string"},
+        "OPENAI_API_VERSION": {"enum": ["modern", "legacy", "auto"]},
         "API_KEYS": {"type": "object"},
         "CUSTOM_MODELS": {"type": "object"},
         "TEMPERATURE": {"type": "number"},
@@ -371,6 +385,23 @@ class OmniPromptManager:
                 config["OPENAI_VERBOSITY"] = "medium"
                 config["_version"] = 1.2
 
+            # Migrate from 1.2 to 1.3 (add new provider test URLs and API version selector)
+            if current_version < 1.3:
+                # Add provider test URLs if not present
+                if "OPENAI_TEST_URL" not in config:
+                    config["OPENAI_TEST_URL"] = "https://api.openai.com/v1/chat/completions"
+                if "DEEPSEEK_TEST_URL" not in config:
+                    config["DEEPSEEK_TEST_URL"] = "https://api.deepseek.com/chat/completions"
+                if "GEMINI_TEST_URL" not in config:
+                    config["GEMINI_TEST_URL"] = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                if "ANTHROPIC_TEST_URL" not in config:
+                    config["ANTHROPIC_TEST_URL"] = "https://api.anthropic.com/v1/messages"
+                if "XAI_TEST_URL" not in config:
+                    config["XAI_TEST_URL"] = "https://api.x.ai/v1/chat/completions"
+                if "OPENAI_API_VERSION" not in config:
+                    config["OPENAI_API_VERSION"] = "modern"
+                config["_version"] = 1.3
+
             # Combine defaults
             merged = DEFAULT_CONFIG.copy()
             merged.update(config)
@@ -542,17 +573,26 @@ class OmniPromptManager:
                 return "[Error: No OpenAI key found]"
 
             model = self.config.get("OPENAI_MODEL", "gpt-4o-mini")
+            api_version = self.config.get("OPENAI_API_VERSION", "modern")
             
-            # Check if using GPT-5 model family (new API endpoint)
-            # Valid GPT-5.4 models from the documentation
-            gpt5_models = ["gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5"]
-            if any(model == m or model.startswith(f"{m}-") for m in gpt5_models):
-                logger.info(f"Using GPT-5 API for model: {model}")
+            # Determine which API to use based on version selector
+            if api_version == "modern":
+                logger.info(f"Using modern API (GPT-5) for model: {model} (manual selection)")
                 return self._make_gpt5_request(prompt, model, api_key, stream_callback)
-            else:
-                # Use legacy API for older models
-                logger.info(f"Using legacy API for model: {model}")
+            elif api_version == "legacy":
+                logger.info(f"Using legacy API (Chat Completions) for model: {model} (manual selection)")
                 return self._make_legacy_openai_request(prompt, model, api_key, stream_callback)
+            else:  # "auto" - auto-detect based on model name
+                # Check if using GPT-5 model family (new API endpoint)
+                # Valid GPT-5.4 models from the documentation
+                gpt5_models = ["gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5"]
+                if any(model == m or model.startswith(f"{m}-") for m in gpt5_models):
+                    logger.info(f"Using GPT-5 API for model: {model} (auto-detected)")
+                    return self._make_gpt5_request(prompt, model, api_key, stream_callback)
+                else:
+                    # Use legacy API for older models
+                    logger.info(f"Using legacy API for model: {model} (auto-detected)")
+                    return self._make_legacy_openai_request(prompt, model, api_key, stream_callback)
 
     def _make_gpt5_request(self, prompt: str, model: str, api_key: str, stream_callback=None) -> str:
             """Make request using the new Responses API for GPT-5 models"""
@@ -966,20 +1006,70 @@ class SettingsDialog(QDialog):
         self.max_tokens_input.setValidator(QIntValidator(1, 4000))
         self.api_layout.addRow("Max Tokens:", self.max_tokens_input)  # ← CHANGED
 
-        # Debug mode checkbox
-        self.debug_mode_checkbox = QCheckBox("Show processing popups (Debug Mode)")
-        self.debug_mode_checkbox.setChecked(True)
-        self.api_layout.addRow(self.debug_mode_checkbox)  # ← CHANGED
-
-        # Filter mode checkbox
-        self.filter_mode_checkbox = QCheckBox(
-            "Skip notes where output field is filled (Filter Mode)"
-        )
-        self.filter_mode_checkbox.setChecked(False)
-        self.api_layout.addRow(self.filter_mode_checkbox)  # ← CHANGED
-
         api_group.setLayout(self.api_layout)  # ← CHANGED
         layout.addWidget(api_group)
+
+        # Provider-specific settings (shown when provider selected)
+        self.provider_settings_group = QGroupBox("Provider Settings")
+        self.provider_settings_group.setVisible(False)  # Hidden by default
+        provider_settings_layout = QVBoxLayout()
+        
+        # URL/Base URL field
+        url_layout = QHBoxLayout()
+        url_layout.addWidget(QLabel("URL/Base URL:"))
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("API endpoint or base URL")
+        url_layout.addWidget(self.url_input)
+        provider_settings_layout.addLayout(url_layout)
+        
+        # Test connection button
+        self.test_connection_button = QPushButton("Test Connection")
+        self.test_connection_button.clicked.connect(self.test_provider_connection)
+        provider_settings_layout.addWidget(self.test_connection_button)
+        
+        # OpenAI-specific settings (only shown for OpenAI provider)
+        self.openai_specific_group = QGroupBox("OpenAI-specific Settings")
+        openai_layout = QVBoxLayout()
+        
+        # API version selector
+        version_layout = QHBoxLayout()
+        version_layout.addWidget(QLabel("API Version:"))
+        self.api_version_combo = QComboBox()
+        self.api_version_combo.addItems(["modern", "legacy", "auto"])
+        version_layout.addWidget(self.api_version_combo)
+        openai_layout.addLayout(version_layout)
+        
+        # Reasoning effort
+        reasoning_layout = QHBoxLayout()
+        reasoning_layout.addWidget(QLabel("Reasoning Effort:"))
+        self.reasoning_effort_combo = QComboBox()
+        self.reasoning_effort_combo.addItems(["none", "low", "medium", "high", "xhigh"])
+        reasoning_layout.addWidget(self.reasoning_effort_combo)
+        openai_layout.addLayout(reasoning_layout)
+        
+        # Verbosity
+        verbosity_layout = QHBoxLayout()
+        verbosity_layout.addWidget(QLabel("Verbosity:"))
+        self.verbosity_combo = QComboBox()
+        self.verbosity_combo.addItems(["low", "medium", "high"])
+        verbosity_layout.addWidget(self.verbosity_combo)
+        openai_layout.addLayout(verbosity_layout)
+        
+        self.openai_specific_group.setLayout(openai_layout)
+        self.openai_specific_group.setVisible(False)  # Hidden by default
+        provider_settings_layout.addWidget(self.openai_specific_group)
+        
+        # DeepSeek-specific settings (only shown for DeepSeek provider)
+        self.deepseek_specific_group = QGroupBox("DeepSeek-specific Settings")
+        deepseek_layout = QVBoxLayout()
+        self.deepseek_stream_checkbox = QCheckBox("Enable Streaming")
+        deepseek_layout.addWidget(self.deepseek_stream_checkbox)
+        self.deepseek_specific_group.setLayout(deepseek_layout)
+        self.deepseek_specific_group.setVisible(False)  # Hidden by default
+        provider_settings_layout.addWidget(self.deepseek_specific_group)
+        
+        self.provider_settings_group.setLayout(provider_settings_layout)
+        layout.addWidget(self.provider_settings_group)
 
         # Advanced settings
         self.advanced_button = QPushButton("Advanced Settings")
@@ -1036,11 +1126,13 @@ class SettingsDialog(QDialog):
 
         # Show the key for whichever provider is selected
         self.show_provider_key()
+        
+        # Update provider-specific settings
+        self.update_provider_specific_ui()
 
         self.temperature_input.setText(str(config.get("TEMPERATURE", 0.2)))
         self.max_tokens_input.setText(str(config.get("MAX_TOKENS", 200)))
-        self.debug_mode_checkbox.setChecked(config.get("DEBUG_MODE", True))
-        self.filter_mode_checkbox.setChecked(config.get("FILTER_MODE", False))
+        # Note: DEBUG_MODE and FILTER_MODE are now in AdvancedSettingsDialog
 
     def get_updated_config(self) -> dict:
         provider = self.provider_combo.currentText()
@@ -1065,11 +1157,28 @@ class SettingsDialog(QDialog):
             self.config.setdefault("API_KEYS", {})
             self.config["API_KEYS"][provider] = self.api_key_input.text()
 
+        # Save provider-specific URL/base URL
+        if provider in ["ollama", "lmstudio"]:
+            # Custom models - base URL
+            url_key = f"{provider.upper()}_BASE_URL"
+            self.config[url_key] = self.url_input.text().strip()
+        else:
+            # Main providers - test URL
+            url_key = f"{provider.upper()}_TEST_URL"
+            self.config[url_key] = self.url_input.text().strip()
+
+        # Save provider-specific settings
+        if provider == "openai":
+            self.config["OPENAI_API_VERSION"] = self.api_version_combo.currentText()
+            self.config["OPENAI_REASONING_EFFORT"] = self.reasoning_effort_combo.currentText()
+            self.config["OPENAI_VERBOSITY"] = self.verbosity_combo.currentText()
+        elif provider == "deepseek":
+            self.config["DEEPSEEK_STREAM"] = self.deepseek_stream_checkbox.isChecked()
+
         self.config["AI_PROVIDER"] = provider
         self.config["TEMPERATURE"] = float(self.temperature_input.text())
         self.config["MAX_TOKENS"] = int(self.max_tokens_input.text())
-        self.config["DEBUG_MODE"] = self.debug_mode_checkbox.isChecked()
-        self.config["FILTER_MODE"] = self.filter_mode_checkbox.isChecked()
+        # Note: DEBUG_MODE and FILTER_MODE are now saved from AdvancedSettingsDialog
 
         return self.config
 
@@ -1129,25 +1238,39 @@ class SettingsDialog(QDialog):
         elif provider == "lmstudio":
             default_models = ["local-model"]
         
-        # Add default models
-        if default_models:
-            self.model_combo.addItems(default_models)
-        
-        # Add custom models for this provider (excluding duplicates)
+        # Get custom models for this provider
         custom_models = self.config.get("CUSTOM_MODELS", {}).get(provider, [])
-        for model in custom_models:
-            if model not in default_models:
-                self.model_combo.addItem(model)
         
         # Get current model from config for this provider
         current_model = self.get_current_model_for_provider(provider)
         
-        # Add current model if it's not already in the list
-        if current_model and current_model not in default_models and current_model not in custom_models:
-            self.model_combo.addItem(current_model)
+        # Combine all models: default + custom + current (if not in either)
+        all_models = set()
+        
+        # Add default models
+        for model in default_models:
+            all_models.add(model)
+        
+        # Add custom models (excluding duplicates)
+        for model in custom_models:
+            all_models.add(model)
+        
+        # Add current model if not already in the list
+        if current_model:
+            all_models.add(current_model)
+        
+        # Sort all models alphabetically
+        sorted_models = sorted(list(all_models), key=lambda x: x.lower())
+        
+        # Add sorted models to combobox
+        self.model_combo.addItems(sorted_models)
         
         # Make combobox editable for ALL providers
         self.model_combo.setEditable(True)
+        
+        # Set current selection to the current model if it exists
+        if current_model and current_model in sorted_models:
+            self.model_combo.setCurrentText(current_model)
         self.show_provider_key()
 
     def add_custom_model(self):
@@ -1179,8 +1302,9 @@ class SettingsDialog(QDialog):
             safe_show_info(f"Model '{model_name}' is already in custom models.")
             return
             
-        # Add to custom models
+        # Add to custom models and sort alphabetically
         custom_models.append(model_name)
+        custom_models.sort(key=lambda x: x.lower())
         self.config["CUSTOM_MODELS"][provider] = custom_models
         
         # Update the combobox to include the new model
@@ -1192,6 +1316,9 @@ class SettingsDialog(QDialog):
         
         # Set the combobox to the newly added model
         self.model_combo.setCurrentText(model_name)
+        
+        # Refresh the model dropdown to reflect sorted order
+        self.update_model_options()
 
     def show_provider_key(self):
         provider = self.provider_combo.currentText()
@@ -1213,6 +1340,9 @@ class SettingsDialog(QDialog):
                     label.setVisible(True)
             key = self.config.get("API_KEYS", {}).get(provider, "")
             self.api_key_input.setText(key)
+        
+        # Also update provider-specific UI
+        self.update_provider_specific_ui()
 
     def show_log(self) -> None:
         log_path = os.path.join(os.path.dirname(__file__), "omnPrompt-anki.log")
@@ -1237,6 +1367,128 @@ class SettingsDialog(QDialog):
         lay.addWidget(close_btn)
 
         dlg.exec()
+    
+    def update_provider_specific_ui(self):
+        """Update provider-specific settings UI based on selected provider"""
+        provider = self.provider_combo.currentText()
+        
+        # Show/hide provider settings group
+        self.provider_settings_group.setVisible(True)
+        
+        # Get appropriate URL for the provider
+        if provider in ["ollama", "lmstudio"]:
+            # Custom models - base URL
+            url_key = f"{provider.upper()}_BASE_URL"
+            placeholder = f"Base URL for {provider.capitalize()}"
+        else:
+            # Main providers - test URL
+            url_key = f"{provider.upper()}_TEST_URL"
+            placeholder = f"Test URL for {provider.capitalize()}"
+        
+        # Set URL input
+        url_value = self.config.get(url_key, "")
+        self.url_input.setText(url_value)
+        self.url_input.setPlaceholderText(placeholder)
+        
+        # Show/hide provider-specific groups
+        self.openai_specific_group.setVisible(provider == "openai")
+        self.deepseek_specific_group.setVisible(provider == "deepseek")
+        
+        # Load OpenAI-specific settings if OpenAI is selected
+        if provider == "openai":
+            self.api_version_combo.setCurrentText(
+                self.config.get("OPENAI_API_VERSION", "modern")
+            )
+            self.reasoning_effort_combo.setCurrentText(
+                self.config.get("OPENAI_REASONING_EFFORT", "none")
+            )
+            self.verbosity_combo.setCurrentText(
+                self.config.get("OPENAI_VERBOSITY", "medium")
+            )
+        
+        # Load DeepSeek-specific settings if DeepSeek is selected
+        if provider == "deepseek":
+            self.deepseek_stream_checkbox.setChecked(
+                self.config.get("DEEPSEEK_STREAM", False)
+            )
+    
+    def test_provider_connection(self):
+        """Test connection for the selected provider"""
+        provider = self.provider_combo.currentText()
+        api_key = self.api_key_input.text().strip()
+        
+        # First check internet connectivity
+        if not check_internet():
+            safe_show_info("No internet connection. Please check your network.")
+            return
+        
+        # Show testing message
+        safe_show_info(f"Testing connection for {provider}...")
+        
+        # Test based on provider type
+        if provider in ["ollama", "lmstudio"]:
+            # Custom models - test base URL
+            url_key = f"{provider.upper()}_BASE_URL"
+            test_url = self.url_input.text().strip() or self.config.get(url_key, "")
+            if not test_url:
+                safe_show_info(f"Please enter a valid base URL for {provider}.")
+                return
+            
+            try:
+                # Simple health check
+                response = requests.get(f"{test_url.rstrip('/')}/api/tags" if provider == "ollama" else f"{test_url.rstrip('/')}/v1/models", timeout=10)
+                if response.status_code == 200:
+                    safe_show_info(f"✅ {provider.capitalize()} connection successful!")
+                else:
+                    safe_show_info(f"❌ {provider.capitalize()} connection failed: HTTP {response.status_code}")
+            except Exception as e:
+                safe_show_info(f"❌ {provider.capitalize()} connection failed: {str(e)}")
+        
+        else:
+            # Main providers - test API key with minimal request
+            if not api_key:
+                safe_show_info(f"Please enter an API key for {provider}.")
+                return
+            
+            url_key = f"{provider.upper()}_TEST_URL"
+            test_url = self.url_input.text().strip() or self.config.get(url_key, "")
+            
+            # Prepare test request based on provider
+            headers = {"Content-Type": "application/json"}
+            if provider == "openai":
+                headers["Authorization"] = f"Bearer {api_key}"
+                test_data = {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "test"}]}
+            elif provider == "deepseek":
+                headers["Authorization"] = f"Bearer {api_key}"
+                test_data = {"model": "deepseek-chat", "messages": [{"role": "user", "content": "test"}]}
+            elif provider == "gemini":
+                # Gemini uses API key in URL
+                model = self.config.get("GEMINI_MODEL", "gemini-pro")
+                test_url = test_url.format(model=model)
+                test_url = f"{test_url}?key={api_key}"
+                test_data = {"contents": [{"parts": [{"text": "test"}]}]}
+            elif provider == "anthropic":
+                headers["x-api-key"] = api_key
+                headers["anthropic-version"] = "2023-06-01"
+                test_data = {"model": "claude-3-haiku-20240307", "max_tokens": 5, "messages": [{"role": "user", "content": "test"}]}
+            elif provider == "xai":
+                headers["Authorization"] = f"Bearer {api_key}"
+                test_data = {"model": "grok-3-mini-latest", "messages": [{"role": "user", "content": "test"}]}
+            else:
+                safe_show_info(f"Provider {provider} not supported for connection testing.")
+                return
+            
+            try:
+                # Make minimal test request
+                response = requests.post(test_url, headers=headers, json=test_data, timeout=15)
+                if response.status_code == 200:
+                    safe_show_info(f"✅ {provider.capitalize()} API key is valid!")
+                elif response.status_code == 401:
+                    safe_show_info(f"❌ {provider.capitalize()} API key is invalid.")
+                else:
+                    safe_show_info(f"❌ {provider.capitalize()} connection failed: HTTP {response.status_code}")
+            except Exception as e:
+                safe_show_info(f"❌ {provider.capitalize()} connection failed: {str(e)}")
 
 
 # ----------------------------------------------------------------
@@ -1266,30 +1518,17 @@ class AdvancedSettingsDialog(QDialog):
         self.timeout_input.setText(str(self.config.get("TIMEOUT", 20)))
         form_layout.addRow("API Timeout (seconds):", self.timeout_input)
 
-        # DeepSeek Stream
-        self.deepseek_stream_combo = QComboBox()
-        self.deepseek_stream_combo.addItems(["False", "True"])
-        if self.config.get("DEEPSEEK_STREAM", False):
-            self.deepseek_stream_combo.setCurrentText("True")
-        else:
-            self.deepseek_stream_combo.setCurrentText("False")
-        form_layout.addRow("DeepSeek Streaming:", self.deepseek_stream_combo)
+        # Debug Mode (Show processing popups)
+        self.debug_mode_checkbox = QCheckBox("Show processing popups (Debug Mode)")
+        self.debug_mode_checkbox.setChecked(self.config.get("DEBUG_MODE", True))
+        form_layout.addRow(self.debug_mode_checkbox)
 
-        # OpenAI GPT-5+ Reasoning Effort (only for OpenAI provider)
-        self.reasoning_effort_combo = QComboBox()
-        self.reasoning_effort_combo.addItems(["none", "low", "medium", "high", "xhigh"])
-        self.reasoning_effort_combo.setCurrentText(
-            self.config.get("OPENAI_REASONING_EFFORT", "none")
+        # Filter Mode (Skip notes where output field is filled)
+        self.filter_mode_checkbox = QCheckBox(
+            "Skip notes where output field is filled (Filter Mode)"
         )
-        form_layout.addRow("OpenAI Reasoning Effort:", self.reasoning_effort_combo)
-
-        # OpenAI GPT-5+ Verbosity
-        self.verbosity_combo = QComboBox()
-        self.verbosity_combo.addItems(["low", "medium", "high"])
-        self.verbosity_combo.setCurrentText(
-            self.config.get("OPENAI_VERBOSITY", "medium")
-        )
-        form_layout.addRow("OpenAI Verbosity:", self.verbosity_combo)
+        self.filter_mode_checkbox.setChecked(self.config.get("FILTER_MODE", False))
+        form_layout.addRow(self.filter_mode_checkbox)
 
         layout.addLayout(form_layout)
 
@@ -1315,11 +1554,8 @@ class AdvancedSettingsDialog(QDialog):
 
         self.config["API_DELAY"] = delay
         self.config["TIMEOUT"] = timeout_val
-        self.config["DEEPSEEK_STREAM"] = (
-            self.deepseek_stream_combo.currentText() == "True"
-        )
-        self.config["OPENAI_REASONING_EFFORT"] = self.reasoning_effort_combo.currentText()
-        self.config["OPENAI_VERBOSITY"] = self.verbosity_combo.currentText()
+        self.config["DEBUG_MODE"] = self.debug_mode_checkbox.isChecked()
+        self.config["FILTER_MODE"] = self.filter_mode_checkbox.isChecked()
 
         omni_prompt_manager.save_config()
         super().accept()

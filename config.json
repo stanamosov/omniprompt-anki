@@ -1,5 +1,5 @@
 {
-  "_version": 1.1,
+  "_version": 1.3,
   "AI_PROVIDER": "openai",
   "API_KEYS": {
     "openai": "",
@@ -17,6 +17,21 @@
   "LMSTUDIO_MODEL": "local-model",
   "OLLAMA_BASE_URL": "http://localhost:11434",
   "LMSTUDIO_BASE_URL": "http://localhost:1234",
+  "OPENAI_TEST_URL": "https://api.openai.com/v1/chat/completions",
+  "DEEPSEEK_TEST_URL": "https://api.deepseek.com/chat/completions",
+  "GEMINI_TEST_URL": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+  "ANTHROPIC_TEST_URL": "https://api.anthropic.com/v1/messages",
+  "XAI_TEST_URL": "https://api.x.ai/v1/chat/completions",
+  "OPENAI_API_VERSION": "modern",
+  "CUSTOM_MODELS": {
+    "openai": [],
+    "deepseek": [],
+    "gemini": [],
+    "anthropic": [],
+    "xai": [],
+    "ollama": [],
+    "lmstudio": []
+  },
   "TEMPERATURE": 0.2,
   "MAX_TOKENS": 200,
   "API_DELAY": 1,
@@ -26,5 +41,11 @@
     "output_field": "Output"
   },
   "DEEPSEEK_STREAM": false,
-  "APPEND_OUTPUT": false
+  "APPEND_OUTPUT": false,
+  "DEBUG_MODE": true,
+  "FILTER_MODE": false,
+  "MULTI_FIELD_MODE": false,
+  "AUTO_SEND_TO_CARD": true,
+  "OPENAI_REASONING_EFFORT": "none",
+  "OPENAI_VERBOSITY": "medium"
 }
