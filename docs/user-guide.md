@@ -274,7 +274,7 @@ Enables partial message updates in real time for DeepSeek models. Provides visua
 
 ## Troubleshooting & Logging
 
-OmniPrompt-Anki maintains a log file (**omnPrompt-anki.log**) inside the add-ons folder to track API requests, responses, and potential errors. This helps with troubleshooting issues like API connection failures, timeouts, or unexpected responses. The log file is capped at **5MB**, with up to **two backups** to prevent excessive disk usage.
+OmniPrompt-Anki maintains a log file (**omniprompt_anki.log**) inside the add-ons folder to track API requests, responses, and potential errors. This helps with troubleshooting issues like API connection failures, timeouts, or unexpected responses. The log file is capped at **5MB**, with up to **two backups** to prevent excessive disk usage.
 
 To access logs:
 1. Open **Tools → OmniPrompt → Settings**

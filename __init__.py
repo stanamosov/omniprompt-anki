@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QSplitter,
+    QProgressBar,
 )
 from aqt import mw, gui_hooks
 from aqt.browser import Browser
@@ -202,7 +203,12 @@ def save_prompt_templates(templates: dict) -> None:
             file.write(f"[[[{key}]]]\n{cleaned_value}\n")
 
 
-def check_internet() -> bool:
+def check_internet(provider: str = None) -> bool:
+    """Check internet connectivity, but skip check for local providers."""
+    # Skip internet check for local providers
+    if provider and provider in ["ollama", "lmstudio"]:
+        return True
+    
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=5)
         return True
@@ -250,7 +256,7 @@ def setup_logger() -> logging.Logger:
     logger_obj = logging.getLogger("OmniPromptAnki")
     logger_obj.setLevel(logging.INFO)
     addon_dir = get_addon_dir()
-    log_file = os.path.join(addon_dir, "omnPrompt-anki.log")
+    log_file = os.path.join(addon_dir, "omniprompt_anki.log")
     handler = SafeAnkiRotatingFileHandler(
         filename=log_file,
         mode="a",
@@ -292,7 +298,7 @@ class SafeAnkiRotatingFileHandler(RotatingFileHandler):
 
 def check_log_size():
     log_path = os.path.join(
-        mw.addonManager.addonsFolder(), "omniprompt-anki", "omnPrompt-anki.log"
+        mw.addonManager.addonsFolder(), "omniprompt-anki", "omniprompt_anki.log"
     )
     try:
         size = os.path.getsize(log_path)
@@ -655,77 +661,78 @@ class OmniPromptManager:
         return self._send_request(url, headers, data)
 
     def _send_gpt5_request(self, url: str, headers: dict, data: dict, stream_callback=None) -> str:
-            """Send request to GPT-5 Responses API"""
-            retries = 3
-            backoff_factor = 2
-            timeout_val = self.config.get("TIMEOUT", 20)
-            
-            if not check_internet():
-                return "[Error: no internet connection]"
-            
-            for attempt in range(retries):
-                try:
-                    # Log request for debugging (without sensitive data)
-                    debug_data = data.copy()
-                    logger.info(f"GPT-5 request attempt {attempt+1}/{retries}")
-                    logger.debug(f"Request data: {debug_data}")
+        """Send request to GPT-5 Responses API"""
+        retries = 3
+        backoff_factor = 2
+        timeout_val = self.config.get("TIMEOUT", 20)
+        
+        if not check_internet(self.config.get("AI_PROVIDER")):
+            return "[Error: no internet connection]"
+        
+        # Dedented: The loop now runs after the internet check (whether it passes or fails, but since return exits early on failure, it's only for success)
+        for attempt in range(retries):
+            try:
+                # Log request for debugging (without sensitive data)
+                debug_data = data.copy()
+                logger.info(f"GPT-5 request attempt {attempt+1}/{retries}")
+                logger.debug(f"Request data: {debug_data}")
+                
+                resp = requests.post(
+                    url, headers=headers, json=data, timeout=timeout_val
+                )
+                
+                # Check for HTTP errors
+                if resp.status_code != 200:
+                    error_msg = f"HTTP {resp.status_code}: {resp.text}"
+                    logger.error(f"GPT-5 API error: {error_msg}")
                     
-                    resp = requests.post(
-                        url, headers=headers, json=data, timeout=timeout_val
-                    )
-                    
-                    # Check for HTTP errors
-                    if resp.status_code != 200:
-                        error_msg = f"HTTP {resp.status_code}: {resp.text}"
-                        logger.error(f"GPT-5 API error: {error_msg}")
-                        
-                        # Try to parse OpenAI error message
-                        try:
-                            error_json = resp.json()
-                            if "error" in error_json:
-                                error_detail = error_json["error"]
-                                if "message" in error_detail:
-                                    error_message = error_detail['message']
-                                    return f"[Error: OpenAI API - {error_message}]"
-                        except:
-                            pass
-                        
-                        return f"[Error: OpenAI API - {error_msg}]"
-                    
-                    # Get and log the raw response
-                    raw_response = resp.text
-                    logger.debug(f"RAW RESPONSE (full): {raw_response}")
-                    
-                    # Try to parse as JSON
+                    # Try to parse OpenAI error message
                     try:
-                        resp_json = resp.json()
-                        logger.debug(f"Parsed JSON response type: {type(resp_json)}")
-                        logger.debug(f"Parsed JSON response keys: {list(resp_json.keys()) if isinstance(resp_json, dict) else 'Not a dict'}")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse response as JSON: {e}")
-                        logger.error(f"Raw response was: {raw_response}")
-                        # If it's not JSON, return the raw text
-                        return raw_response.strip()
+                        error_json = resp.json()
+                        if "error" in error_json:
+                            error_detail = error_json["error"]
+                            if "message" in error_detail:
+                                error_message = error_detail['message']
+                                return f"[Error: OpenAI API - {error_message}]"
+                    except:
+                        pass
                     
-                    time.sleep(self.config.get("API_DELAY", 1))
-                    
-                    # Parse the response
-                    result = self._parse_gpt5_response(resp_json)
-                    logger.info(f"GPT-5 response parsed successfully, length: {len(result)}")
-                    logger.debug(f"Parsed result: {result}")
-                    return result
-                    
-                except requests.exceptions.Timeout:
-                    logger.warning(f"Timeout. Retrying {attempt+1}/{retries}...")
-                    time.sleep(backoff_factor * (attempt + 1))
-                except Exception as e:
-                    logger.exception(f"GPT-5 API error on attempt {attempt+1}:")
-                    if attempt == retries - 1:  # Last attempt
-                        return f"[Error: {str(e)}]"
-                    time.sleep(backoff_factor * (attempt + 1))
-            
-            return "[Error: request failed after retries]"
-    
+                    return f"[Error: OpenAI API - {error_msg}]"
+                
+                # Get and log the raw response
+                raw_response = resp.text
+                logger.debug(f"RAW RESPONSE (full): {raw_response}")
+                
+                # Try to parse as JSON
+                try:
+                    resp_json = resp.json()
+                    logger.debug(f"Parsed JSON response type: {type(resp_json)}")
+                    logger.debug(f"Parsed JSON response keys: {list(resp_json.keys()) if isinstance(resp_json, dict) else 'Not a dict'}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse response as JSON: {e}")
+                    logger.error(f"Raw response was: {raw_response}")
+                    # If it's not JSON, return the raw text
+                    return raw_response.strip()
+                
+                time.sleep(self.config.get("API_DELAY", 1))
+                
+                # Parse the response
+                result = self._parse_gpt5_response(resp_json)
+                logger.info(f"GPT-5 response parsed successfully, length: {len(result)}")
+                logger.debug(f"Parsed result: {result}")
+                return result
+                
+            except requests.exceptions.Timeout:
+                logger.warning(f"Timeout. Retrying {attempt+1}/{retries}...")
+                time.sleep(backoff_factor * (attempt + 1))
+            except Exception as e:
+                logger.exception(f"GPT-5 API error on attempt {attempt+1}:")
+                if attempt == retries - 1:  # Last attempt
+                    return f"[Error: {str(e)}]"
+                time.sleep(backoff_factor * (attempt + 1))
+        
+        return "[Error: request failed after retries]"
+        
     def _parse_gpt5_response(self, resp_json):
             """Parse GPT-5.4 response format - ULTRA SIMPLE VERSION"""
             logger.debug(f"GPT-5 response type: {type(resp_json)}")
@@ -900,7 +907,7 @@ class OmniPromptManager:
         backoff_factor = 2
         timeout_val = self.config.get("TIMEOUT", 20)
 
-        if not check_internet():
+        if not check_internet(self.config.get("AI_PROVIDER")):
             return "[Error: no internet connection]"
 
         for attempt in range(retries):
@@ -969,10 +976,12 @@ class SettingsDialog(QDialog):
 
         self.provider_combo = QComboBox()
         self.provider_combo.addItems(AI_PROVIDERS)
+        self.provider_combo.setToolTip("Select which AI provider to use (OpenAI, Ollama, etc.)")
         provider_layout.addWidget(QLabel("Select AI Provider:"))
         provider_layout.addWidget(self.provider_combo)
 
         self.model_combo = QComboBox()
+        self.model_combo.setToolTip("Select or type model name. Use '+' to add custom models.")
         
         # "+" button for adding custom models
         self.add_custom_model_button = QPushButton("+")
@@ -996,14 +1005,17 @@ class SettingsDialog(QDialog):
 
         self.api_key_input = QLineEdit()
         self.api_key_input.setPlaceholderText("Enter API key for the chosen provider")
+        self.api_key_input.setToolTip("API key for the selected provider. Not needed for local providers like Ollama/LM Studio.")
         self.api_layout.addRow("API Key:", self.api_key_input)  # ← CHANGED: api_layout to self.api_layout
 
         self.temperature_input = QLineEdit()
         self.temperature_input.setValidator(QDoubleValidator(0.0, 2.0, 2))
+        self.temperature_input.setToolTip("Controls randomness: 0.0 = deterministic, 2.0 = most random")
         self.api_layout.addRow("Temperature:", self.temperature_input)  # ← CHANGED
 
         self.max_tokens_input = QLineEdit()
         self.max_tokens_input.setValidator(QIntValidator(1, 4000))
+        self.max_tokens_input.setToolTip("Maximum tokens in AI response (approx 1 token = 0.75 words)")
         self.api_layout.addRow("Max Tokens:", self.max_tokens_input)  # ← CHANGED
 
         api_group.setLayout(self.api_layout)  # ← CHANGED
@@ -1019,6 +1031,7 @@ class SettingsDialog(QDialog):
         url_layout.addWidget(QLabel("URL/Base URL:"))
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("API endpoint or base URL")
+        self.url_input.setToolTip("API endpoint URL for cloud providers, or base URL for local providers like Ollama/LM Studio")
         url_layout.addWidget(self.url_input)
         provider_settings_layout.addLayout(url_layout)
         
@@ -1345,7 +1358,7 @@ class SettingsDialog(QDialog):
         self.update_provider_specific_ui()
 
     def show_log(self) -> None:
-        log_path = os.path.join(os.path.dirname(__file__), "omnPrompt-anki.log")
+        log_path = os.path.join(os.path.dirname(__file__), "omniprompt_anki.log")
         try:
             with open(log_path, "r", encoding="utf-8") as f:
                 log_content = f.read()
@@ -1417,13 +1430,17 @@ class SettingsDialog(QDialog):
         provider = self.provider_combo.currentText()
         api_key = self.api_key_input.text().strip()
         
+        logger.info(f"Testing connection for provider: {provider}")
+        
         # First check internet connectivity
-        if not check_internet():
+        if not check_internet(provider):
             safe_show_info("No internet connection. Please check your network.")
+            logger.warning(f"No internet connection for provider: {provider}")
             return
         
         # Show testing message
         safe_show_info(f"Testing connection for {provider}...")
+        logger.info(f"Starting connection test for {provider}")
         
         # Test based on provider type
         if provider in ["ollama", "lmstudio"]:
@@ -1435,13 +1452,37 @@ class SettingsDialog(QDialog):
                 return
             
             try:
+                logger.info(f"Testing {provider} connection to URL: {test_url}")
                 # Simple health check
-                response = requests.get(f"{test_url.rstrip('/')}/api/tags" if provider == "ollama" else f"{test_url.rstrip('/')}/v1/models", timeout=10)
+                endpoint = f"{test_url.rstrip('/')}/api/tags" if provider == "ollama" else f"{test_url.rstrip('/')}/v1/models"
+                logger.info(f"Requesting endpoint: {endpoint}")
+                response = requests.get(endpoint, timeout=10)
+                logger.info(f"Response status: {response.status_code}")
+                
                 if response.status_code == 200:
                     safe_show_info(f"✅ {provider.capitalize()} connection successful!")
+                    # For Ollama, also fetch and display available models
+                    if provider == "ollama" and response.json():
+                        models_data = response.json()
+                        if "models" in models_data:
+                            model_names = [model.get("name", "") for model in models_data["models"]]
+                            if model_names:
+                                logger.info(f"Available Ollama models: {', '.join(model_names)}")
+                                # Update model combo box with available models
+                                self.update_model_combo_with_list(model_names)
+                    elif provider == "lmstudio" and response.json():
+                        models_data = response.json()
+                        if "data" in models_data:
+                            model_names = [model.get("id", "") for model in models_data["data"]]
+                            if model_names:
+                                logger.info(f"Available LM Studio models: {', '.join(model_names)}")
+                                # Update model combo box with available models
+                                self.update_model_combo_with_list(model_names)
                 else:
+                    logger.warning(f"{provider.capitalize()} connection failed with status: {response.status_code}")
                     safe_show_info(f"❌ {provider.capitalize()} connection failed: HTTP {response.status_code}")
             except Exception as e:
+                logger.exception(f"{provider.capitalize()} connection failed with exception:")
                 safe_show_info(f"❌ {provider.capitalize()} connection failed: {str(e)}")
         
         else:
@@ -1489,6 +1530,57 @@ class SettingsDialog(QDialog):
                     safe_show_info(f"❌ {provider.capitalize()} connection failed: HTTP {response.status_code}")
             except Exception as e:
                 safe_show_info(f"❌ {provider.capitalize()} connection failed: {str(e)}")
+    
+    def update_model_combo_with_list(self, model_names: list):
+        """Update model combo box with fetched list of available models"""
+        if not model_names:
+            logger.warning("Empty model list received")
+            return
+        
+        provider = self.provider_combo.currentText()
+        current_model = self.model_combo.currentText()
+        
+        # Store custom models for this provider
+        if "CUSTOM_MODELS" not in self.config:
+            self.config["CUSTOM_MODELS"] = {
+                "openai": [],
+                "deepseek": [],
+                "gemini": [],
+                "anthropic": [],
+                "xai": [],
+                "ollama": [],
+                "lmstudio": []
+            }
+        
+        # Get existing custom models
+        custom_models = self.config["CUSTOM_MODELS"].get(provider, [])
+        
+        # Combine fetched models with custom models (remove duplicates)
+        all_models = set()
+        for model in model_names:
+            if model:  # Skip empty strings
+                all_models.add(model)
+        for model in custom_models:
+            if model:
+                all_models.add(model)
+        
+        # Keep current model in the list if it exists
+        if current_model and current_model not in all_models:
+            all_models.add(current_model)
+        
+        # Sort alphabetically
+        sorted_models = sorted(list(all_models), key=lambda x: x.lower())
+        
+        # Update the combo box
+        self.model_combo.clear()
+        self.model_combo.addItems(sorted_models)
+        self.model_combo.setEditable(True)
+        
+        # Try to restore previous selection
+        if current_model in sorted_models:
+            self.model_combo.setCurrentText(current_model)
+        
+        logger.info(f"Updated model list for {provider} with {len(sorted_models)} models")
 
 
 # ----------------------------------------------------------------
@@ -1619,6 +1711,7 @@ class UpdateOmniPromptDialog(QDialog):
         # Append CheckBox
         self.append_checkbox = QCheckBox("Append Output")
         self.append_checkbox.setChecked(self.manager.config.get("APPEND_OUTPUT", False))
+        self.append_checkbox.setToolTip("Append adds to existing content without overwriting")
         self.append_checkbox.stateChanged.connect(self.on_append_checkbox_changed)
         left_panel.addWidget(self.append_checkbox)
 
@@ -1650,6 +1743,21 @@ class UpdateOmniPromptDialog(QDialog):
 
         main_layout.addLayout(left_panel, 1)
 
+        # Table with global progress bar
+        table_container = QVBoxLayout()
+        
+        # Global progress bar (hidden by default, shown for >10 notes)
+        self.global_progress_container = QWidget()
+        global_progress_layout = QHBoxLayout(self.global_progress_container)
+        self.global_progress_label = QLabel("Overall Progress:")
+        self.global_progress_bar = QProgressBar()
+        self.global_progress_bar.setRange(0, 100)
+        self.global_progress_bar.setValue(0)
+        global_progress_layout.addWidget(self.global_progress_label)
+        global_progress_layout.addWidget(self.global_progress_bar)
+        self.global_progress_container.setVisible(False)  # Hidden by default
+        table_container.addWidget(self.global_progress_container)
+        
         # Table
         self.table = QTableWidget()
         self.table.setColumnCount(3)
@@ -1663,7 +1771,10 @@ class UpdateOmniPromptDialog(QDialog):
         # You can also set a minimum section size for more consistent spacing
         self.table.horizontalHeader().setMinimumSectionSize(100)
         self.table.verticalHeader().setMinimumSectionSize(30)
-        main_layout.addWidget(self.table, 3)
+        table_container.addWidget(self.table)
+        
+        # Add table container to main layout with stretch factor 3
+        main_layout.addLayout(table_container, 3)
 
         self.setLayout(main_layout)
 
