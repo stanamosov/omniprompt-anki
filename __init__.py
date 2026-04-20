@@ -379,40 +379,89 @@ class OmniPromptManager:
         return self.migrate_config(validated)
 
     def migrate_config(self, config: dict) -> dict:
-            current_version = config.get("_version", 0)
+        current_version = config.get("_version", 0)
+        
+        # If too old (pre-1.0), force full reset to new defaults (rare for v1.1 users)
+        if current_version < 1.0:
+            logger.info(f"Config too old (v{current_version}). Forcing reset to v1.3 defaults.")
+            # Preserve API_KEYS if present to avoid total loss
+            api_keys = config.get("API_KEYS", {})
+            reset_config = DEFAULT_CONFIG.copy()
+            reset_config["API_KEYS"] = api_keys  # Salvage old keys
+            return reset_config
+
+        # For v1.1 users: Preserve old values, add new fields without override
+        if current_version < 1.2:
+            # Add GPT-5 specific params (as in your original)
+            config["OPENAI_REASONING_EFFORT"] = config.get("OPENAI_REASONING_EFFORT", "none")
+            config["OPENAI_VERBOSITY"] = config.get("OPENAI_VERBOSITY", "medium")
+            config["_version"] = 1.2
+            logger.debug("Migrated v1.1 config to v1.2: Added GPT-5 params.")
+
+        # For v1.2 users (or now v1.1 bumped to 1.2): Add v1.3 features
+        if current_version < 1.3:
+            # Preserve old AI_PROVIDER (e.g., "openai" from v1.1) – don't override with new "ollama" default
+            old_provider = config.get("AI_PROVIDER", "openai")
             
-            if current_version < 1.0:
-                logger.info(f"Config too old (v{current_version}). Forcing reset.")
-                return DEFAULT_CONFIG.copy()
-
-            # Migrate from 1.1 to 1.2
-            if current_version < 1.2:
-                config["OPENAI_REASONING_EFFORT"] = "none"
-                config["OPENAI_VERBOSITY"] = "medium"
-                config["_version"] = 1.2
-
-            # Migrate from 1.2 to 1.3 (add new provider test URLs and API version selector)
-            if current_version < 1.3:
-                # Add provider test URLs if not present
-                if "OPENAI_TEST_URL" not in config:
-                    config["OPENAI_TEST_URL"] = "https://api.openai.com/v1/chat/completions"
-                if "DEEPSEEK_TEST_URL" not in config:
-                    config["DEEPSEEK_TEST_URL"] = "https://api.deepseek.com/chat/completions"
-                if "GEMINI_TEST_URL" not in config:
-                    config["GEMINI_TEST_URL"] = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-                if "ANTHROPIC_TEST_URL" not in config:
-                    config["ANTHROPIC_TEST_URL"] = "https://api.anthropic.com/v1/messages"
-                if "XAI_TEST_URL" not in config:
-                    config["XAI_TEST_URL"] = "https://api.x.ai/v1/chat/completions"
-                if "OPENAI_API_VERSION" not in config:
-                    config["OPENAI_API_VERSION"] = "modern"
-                config["_version"] = 1.3
-
-            # Combine defaults
-            merged = DEFAULT_CONFIG.copy()
-            merged.update(config)
+            # Add new provider models/base URLs/test URLs with defaults, but only if missing
+            new_keys = {
+                "GEMINI_MODEL": "gemini-1.5-flash",
+                "ANTHROPIC_MODEL": "claude-opus-4-latest",
+                "XAI_MODEL": "grok-3-latest",
+                "OLLAMA_MODEL": "llama3.2",
+                "LMSTUDIO_MODEL": "local-model",
+                "OLLAMA_BASE_URL": "http://localhost:11434",
+                "LMSTUDIO_BASE_URL": "http://localhost:1234",
+                "OPENAI_TEST_URL": "https://api.openai.com/v1/chat/completions",
+                "DEEPSEEK_TEST_URL": "https://api.deepseek.com/chat/completions",
+                "GEMINI_TEST_URL": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                "ANTHROPIC_TEST_URL": "https://api.anthropic.com/v1/messages",
+                "XAI_TEST_URL": "https://api.x.ai/v1/chat/completions",
+                "OPENAI_API_VERSION": "modern",  # For GPT-5 support
+                # New advanced toggles (default off/false to match old behavior)
+                "FILTER_MODE": False,
+                "MULTI_FIELD_MODE": False,
+                "AUTO_SEND_TO_CARD": True,  # Sensible default
+                # GPT-5 params (if not already added in 1.2)
+                "OPENAI_REASONING_EFFORT": config.get("OPENAI_REASONING_EFFORT", "none"),
+                "OPENAI_VERBOSITY": config.get("OPENAI_VERBOSITY", "medium"),
+                # Custom models: Initialize empty for all (old has none)
+                "CUSTOM_MODELS": {
+                    "openai": config.get("CUSTOM_MODELS", {}).get("openai", []),
+                    "deepseek": config.get("CUSTOM_MODELS", {}).get("deepseek", []),
+                    "gemini": [],
+                    "anthropic": [],
+                    "xai": [],
+                    "ollama": [],
+                    "lmstudio": []
+                }
+            }
             
-            return merged
+            # Merge new keys into config (preserves old, adds missing)
+            for key, value in new_keys.items():
+                if key not in config:
+                    config[key] = value
+            
+            # Ensure AI_PROVIDER is preserved (old v1.1 value like "openai")
+            config["AI_PROVIDER"] = old_provider
+            
+            config["_version"] = 1.3
+            logger.info(f"Successfully migrated v{current_version} config to v1.3. Preserved old provider '{old_provider}' and added {len(new_keys)} new features (e.g., more providers, custom models).")
+
+        # Final merge: Use new defaults for anything still missing, but preserve all old/existing values
+        merged = DEFAULT_CONFIG.copy()
+        merged.update(config)  # Old values override defaults where present
+        
+        # Special: Ensure CUSTOM_MODELS is fully initialized (even if partial from old)
+        if "CUSTOM_MODELS" not in merged:
+            merged["CUSTOM_MODELS"] = DEFAULT_CONFIG["CUSTOM_MODELS"].copy()
+        else:
+            # Fill in empty lists for new providers if missing
+            for prov in AI_PROVIDERS:
+                if prov not in merged["CUSTOM_MODELS"]:
+                    merged["CUSTOM_MODELS"][prov] = []
+        
+        return merged
 
     def validate_config(self, config: dict) -> dict:
         try:
