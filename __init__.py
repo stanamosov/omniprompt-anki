@@ -1671,6 +1671,9 @@ class UpdateOmniPromptDialog(QDialog):
             "MULTI_FIELD_MODE", False
         )  # Initialize from config
         self.auto_detect_fields = []  # Store auto-detected field names
+        # Global progress tracking
+        self.total_notes = 0
+        self.global_progress_indeterminate = False
 
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
@@ -1997,6 +2000,20 @@ class UpdateOmniPromptDialog(QDialog):
             return
 
         self.auto_detect_fields = []  # Clear auto-detect fields when starting
+        
+        # Global progress bar logic
+        self.total_notes = len(note_prompts)
+        
+        # Show global progress bar for >10 notes
+        if self.total_notes > 10:
+            self.global_progress_container.setVisible(True)
+            # Start in indeterminate mode (animated)
+            self.global_progress_bar.setRange(0, 0)
+            self.global_progress_indeterminate = True
+        else:
+            # Ensure it's hidden for small batches
+            self.global_progress_container.setVisible(False)
+            self.global_progress_indeterminate = False
 
         if self.multi_field_mode:
             # Create two rows per note: one for generated, one for original
@@ -2141,6 +2158,10 @@ class UpdateOmniPromptDialog(QDialog):
         if self.worker:
             self.worker.cancel()
             self.stop_button.setEnabled(False)
+            # Reset and hide global progress bar
+            self.global_progress_bar.setValue(0)
+            self.global_progress_container.setVisible(False)
+            self.global_progress_indeterminate = False
 
     def _generate_with_progress(self, prompt, stream_progress_callback=None):
         return self.manager.generate_ai_response(prompt, stream_progress_callback)
@@ -2151,6 +2172,25 @@ class UpdateOmniPromptDialog(QDialog):
         item = self.table.item(row_index, 0)
         if item:
             item.setText(f"{pct}%")
+        
+        # Also update global progress bar if visible
+        self.update_global_progress(note_index, pct)
+
+    def update_global_progress(self, note_index: int, pct: int):
+        """Update the global progress bar with overall progress."""
+        # Only update if the container is visible (>10 notes)
+        if not self.global_progress_container.isVisible():
+            return
+        
+        # Switch from indeterminate to determinate on first progress
+        if self.global_progress_indeterminate:
+            self.global_progress_bar.setRange(0, 100)
+            self.global_progress_indeterminate = False
+        
+        # Calculate overall progress (0-100)
+        if self.total_notes > 0:
+            overall = int((note_index * 100 + pct) / self.total_notes)
+            self.global_progress_bar.setValue(min(overall, 100))
 
     def save_manual_edits(self):
         """Saves the current content from the table cells to the Anki notes."""
@@ -2212,6 +2252,11 @@ class UpdateOmniPromptDialog(QDialog):
     def processing_finished(self, processed: int, total: int, error_count: int):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        
+        # Update global progress bar to 100% and hide it
+        self.global_progress_bar.setValue(100)
+        self.global_progress_container.setVisible(False)
+        self.global_progress_indeterminate = False
 
         auto_send = self.manager.config.get("AUTO_SEND_TO_CARD", True)
 
