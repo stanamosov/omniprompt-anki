@@ -965,6 +965,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("OmniPrompt Configuration")
         self.setMinimumWidth(500)
         self.config = None
+        self.original_custom_models = None  # Track original custom models for change detection
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -1114,6 +1115,9 @@ class SettingsDialog(QDialog):
 
     def load_config(self, config: dict) -> None:
         self.config = config
+        # Store original custom models for change detection
+        self.original_custom_models = config.get("CUSTOM_MODELS", {}).copy()
+        
         provider = config.get("AI_PROVIDER", "openai")
         self.provider_combo.setCurrentText(provider)
         self.update_model_options()
@@ -1461,23 +1465,95 @@ class SettingsDialog(QDialog):
                 
                 if response.status_code == 200:
                     safe_show_info(f"✅ {provider.capitalize()} connection successful!")
-                    # For Ollama, also fetch and display available models
-                    if provider == "ollama" and response.json():
+                    # For Ollama/LM Studio, also fetch and display available models
+                    try:
+                        # Try to parse JSON response
+                        raw_response_text = response.text
                         models_data = response.json()
-                        if "models" in models_data:
-                            model_names = [model.get("name", "") for model in models_data["models"]]
-                            if model_names:
-                                logger.info(f"Available Ollama models: {', '.join(model_names)}")
-                                # Update model combo box with available models
-                                self.update_model_combo_with_list(model_names)
-                    elif provider == "lmstudio" and response.json():
-                        models_data = response.json()
-                        if "data" in models_data:
-                            model_names = [model.get("id", "") for model in models_data["data"]]
-                            if model_names:
-                                logger.info(f"Available LM Studio models: {', '.join(model_names)}")
-                                # Update model combo box with available models
-                                self.update_model_combo_with_list(model_names)
+                        
+                        # Log raw response (first 500 chars) for debugging
+                        logger.debug(f"Raw response (first 500 chars): {raw_response_text[:500]}")
+                        
+                        # Extract model names with flexible parsing
+                        model_names = []
+                        
+                        if provider == "ollama":
+                            # Try multiple possible JSON structures for Ollama
+                            if isinstance(models_data, dict):
+                                if "models" in models_data and isinstance(models_data["models"], list):
+                                    for model in models_data["models"]:
+                                        if isinstance(model, dict) and "name" in model:
+                                            model_names.append(model["name"])
+                                        elif isinstance(model, str):
+                                            model_names.append(model)
+                                elif "data" in models_data and isinstance(models_data["data"], list):
+                                    for model in models_data["data"]:
+                                        if isinstance(model, dict) and "name" in model:
+                                            model_names.append(model["name"])
+                                        elif isinstance(model, str):
+                                            model_names.append(model)
+                                # Fallback: if root is a list
+                                elif isinstance(models_data, list):
+                                    for model in models_data:
+                                        if isinstance(model, dict) and "name" in model:
+                                            model_names.append(model["name"])
+                                        elif isinstance(model, str):
+                                            model_names.append(model)
+                        
+                        elif provider == "lmstudio":
+                            # Try multiple possible JSON structures for LM Studio
+                            if isinstance(models_data, dict):
+                                if "data" in models_data and isinstance(models_data["data"], list):
+                                    for model in models_data["data"]:
+                                        if isinstance(model, dict):
+                                            # Try various ID fields
+                                            for field in ["id", "model_id", "name", "model"]:
+                                                if field in model and model[field]:
+                                                    model_names.append(model[field])
+                                                    break
+                                        elif isinstance(model, str):
+                                            model_names.append(model)
+                                elif "models" in models_data and isinstance(models_data["models"], list):
+                                    for model in models_data["models"]:
+                                        if isinstance(model, dict):
+                                            for field in ["id", "model_id", "name", "model"]:
+                                                if field in model and model[field]:
+                                                    model_names.append(model[field])
+                                                    break
+                                        elif isinstance(model, str):
+                                            model_names.append(model)
+                                # Fallback: if root is a list
+                                elif isinstance(models_data, list):
+                                    for model in models_data:
+                                        if isinstance(model, dict):
+                                            for field in ["id", "model_id", "name", "model"]:
+                                                if field in model and model[field]:
+                                                    model_names.append(model[field])
+                                                    break
+                                        elif isinstance(model, str):
+                                            model_names.append(model)
+                        
+                        # Remove duplicates and empty strings
+                        model_names = list({name for name in model_names if name and isinstance(name, str)})
+                        
+                        if model_names:
+                            logger.info(f"Available {provider.capitalize()} models ({len(model_names)}): {', '.join(model_names[:10])}{'...' if len(model_names) > 10 else ''}")
+                            # Update model combo box with available models
+                            self.update_model_combo_with_list(model_names)
+                            # Show success message with model count
+                            safe_show_info(f"✅ Found {len(model_names)} models for {provider.capitalize()}!")
+                        else:
+                            logger.warning(f"No models found in {provider.capitalize()} response. JSON structure may have changed.")
+                            logger.debug(f"Full response JSON: {models_data}")
+                            safe_show_info(f"✅ Connection successful but no models found. JSON structure may have changed.")
+                    
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse JSON from {provider.capitalize()} response: {e}")
+                        logger.error(f"Raw response (first 500 chars): {raw_response_text[:500]}")
+                        safe_show_info(f"✅ Connection successful but could not parse model list. Check logs for details.")
+                    except Exception as e:
+                        logger.exception(f"Error processing {provider.capitalize()} model list:")
+                        safe_show_info(f"✅ Connection successful but error processing model list: {str(e)[:100]}")
                 else:
                     logger.warning(f"{provider.capitalize()} connection failed with status: {response.status_code}")
                     safe_show_info(f"❌ {provider.capitalize()} connection failed: HTTP {response.status_code}")
@@ -1580,7 +1656,66 @@ class SettingsDialog(QDialog):
         if current_model in sorted_models:
             self.model_combo.setCurrentText(current_model)
         
+        # Update tooltip to show all available models
+        tooltip_text = f"Available models for {provider}:\n"
+        for i, model in enumerate(sorted_models, 1):
+            tooltip_text += f"{i}. {model}\n"
+        
+        # Limit tooltip length if too many models
+        if len(sorted_models) > 50:
+            tooltip_text = f"Available models for {provider}:\n"
+            for i, model in enumerate(sorted_models[:50], 1):
+                tooltip_text += f"{i}. {model}\n"
+            tooltip_text += f"... and {len(sorted_models) - 50} more models"
+        
+        self.model_combo.setToolTip(tooltip_text.strip())
         logger.info(f"Updated model list for {provider} with {len(sorted_models)} models")
+    
+    def reject(self):
+        """Override reject to check for unsaved model changes."""
+        # Check if custom models have changed
+        current_custom_models = self.config.get("CUSTOM_MODELS", {})
+        
+        if self.original_custom_models is not None and current_custom_models != self.original_custom_models:
+            # Prompt user to save changes
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setWindowTitle("Save Fetched Models?")
+            msg.setText("Save fetched models to custom models list?")
+            msg.setInformativeText(
+                "You have fetched new models that haven't been saved to your custom models list. "
+                "If you don't save, these models will be lost when you close this dialog."
+            )
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Yes | 
+                QMessageBox.StandardButton.No | 
+                QMessageBox.StandardButton.Cancel
+            )
+            msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+            
+            result = msg.exec()
+            
+            if result == QMessageBox.StandardButton.Cancel:
+                return  # Don't close dialog
+            
+            if result == QMessageBox.StandardButton.Yes:
+                # Save config through the manager
+                try:
+                    from __init__ import omni_prompt_manager
+                    omni_prompt_manager.config = self.config
+                    omni_prompt_manager.save_config()
+                    logger.info("Saved fetched models to config after user confirmation")
+                except Exception as e:
+                    logger.exception("Failed to save config after user confirmation:")
+                    QMessageBox.critical(
+                        self, 
+                        "Save Failed", 
+                        f"Failed to save config: {str(e)}"
+                    )
+                    return  # Don't close on save failure
+        
+        # Call parent reject to close dialog
+        super().reject()
 
 
 # ----------------------------------------------------------------
