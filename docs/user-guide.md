@@ -134,21 +134,40 @@ Track generation progress and view original content alongside AI output during b
 The standard workflow where AI output is saved to a single field. You can choose to append to existing content or replace it.
 
 ### Multi-field Output
-OmniPrompt can parse AI responses into multiple fields automatically. Enable "Auto-detect multiple output fields" in the Update with OmniPrompt dialog. The add-on will detect code blocks or XML-like tags in the AI response and map them to corresponding note fields.
+OmniPrompt can parse AI responses into multiple fields automatically. Enable "Auto-detect multiple output fields" in the Update with OmniPrompt dialog. When enabled, the add-on will detect structured output and map content to the appropriate note fields.
 
-Example AI response format:
-```
-```Sentences_Hanyu
-句子1<br/>句子2...
-```
-```Sentences_Pinyin
-Jùzǐ1<br/>Jùzǐ2...
-```
-```Sentences_English
-literal translation1<br/>literal translation2...
-```
+**How to Use Multi-field Mode:**
+1. **Enable multi-field mode**: Check "Auto-detect multiple output fields" in the Update with OmniPrompt dialog
+2. **Craft your prompt**: Include field placeholders (e.g., `{Front}`) and specify the desired output format
+3. **Start processing**: The AI response will be automatically parsed into multiple fields
+4. **Review and save**: Check the parsed fields in the table, make edits if needed, then save to notes
 
-The add-on will automatically populate the `Sentences_Hanyu`, `Sentences_Pinyin`, and `Sentences_English` fields with the respective content.
+**Supported Output Formats:**
+- **Code blocks**: ```FieldName\nContent``` (recommended for most AI models)
+- **XML-like tags**: `<FieldName>Content</FieldName>`
+- **JSON**: `{"Field1": "content", "Field2": "content"}` (enable JSON mode for structured providers)
+
+**In-App Guidance:**
+- **Tooltip**: Hover over the multi-field checkbox for detailed instructions
+- **Pro tip**: Shows example prompt format for multi-field output
+- **Test parse button**: Test parsing on a single note before processing the entire batch
+- **Available fields**: Shows fields from your note model for reference
+
+**Advanced Features:**
+- **JSON mode**: For structured providers like OpenAI/Anthropic - provides more reliable parsing
+- **Auto-append format instructions**: Automatically adds formatting guidance to your prompt
+- **Field mismatch handling**: Detects when parsed fields don't match note fields and offers auto-mapping
+- **Note type consistency check**: Warns when processing notes of different types
+- **Append mode**: Append AI-generated content to existing field content with separator
+- **Hide raw output**: Toggle to hide/show the raw AI output column for better focus
+
+**Tips for Power Users:**
+- Use `{Field}` placeholders in your prompt to reference note fields
+- Include explicit format instructions in your prompt for best results
+- Test small batches first with the "Test Parse on 1 Note" button
+- Use JSON mode with structured providers like GPT-5.4 for maximum reliability
+- The table will automatically expand to accommodate all detected fields
+- For wide tables, use horizontal scrolling to view all fields
 
 ### Batch Processing
 Process multiple notes simultaneously with real-time progress tracking. Each note's status is displayed in the progress table.

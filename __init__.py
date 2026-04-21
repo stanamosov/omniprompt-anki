@@ -19,8 +19,10 @@ from PyQt6.QtGui import (
     QIntValidator,
     QKeySequence,
     QShortcut,
+    QClipboard,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QVBoxLayout,
     QGroupBox,
@@ -109,6 +111,10 @@ DEFAULT_CONFIG = {
     "FILTER_MODE": False,  # Skip notes where output field is filled
     "MULTI_FIELD_MODE": False,
     "AUTO_SEND_TO_CARD": True,  # New config key for auto-sending data
+    # Multi-field specific parameters
+    "MULTI_FIELD_JSON_MODE": False,  # Use JSON output for multi-field parsing
+    "MULTI_FIELD_AUTO_APPEND": True,  # Auto-add format instructions to prompt
+    "MULTI_FIELD_CUSTOM_INSTRUCTIONS": "",  # Custom format instructions for multi-field mode
     # New GPT-5.4 specific parameters
     "OPENAI_REASONING_EFFORT": "none",  # none, low, medium, high, xhigh
     "OPENAI_VERBOSITY": "medium",  # low, medium, high
@@ -147,6 +153,9 @@ CONFIG_SCHEMA = {
         "FILTER_MODE": {"type": "boolean"},
         "MULTI_FIELD_MODE": {"type": "boolean"},
         "AUTO_SEND_TO_CARD": {"type": "boolean"},  # Add to schema
+        "MULTI_FIELD_JSON_MODE": {"type": "boolean"},
+        "MULTI_FIELD_AUTO_APPEND": {"type": "boolean"},
+        "MULTI_FIELD_CUSTOM_INSTRUCTIONS": {"type": "string"},
         "OPENAI_REASONING_EFFORT": {"enum": ["none", "low", "medium", "high", "xhigh"]},
         "OPENAI_VERBOSITY": {"enum": ["low", "medium", "high"]},
         "SELECTED_FIELDS": {
@@ -159,6 +168,11 @@ CONFIG_SCHEMA = {
 
 PROMPT_SETTINGS_FILENAME = "prompt_settings.json"
 MULTI_FIELD_PATTERN = r"```([\w\s]+)\n([^`]+)```"
+
+# Multi-field guidance constants
+MULTI_FIELD_TOOLTIP = "AI output will be parsed into fields using ```FieldName\nContent``` or <FieldName>Content</FieldName>. Works best with 2-5 fields; no limit enforced."
+MULTI_FIELD_PRO_TIP = "To reference fields use {Field Name}, to fill multiple fields, use output in this format: ```Field Name\nGenerated Content to fill in the field```"
+MULTI_FIELD_JSON_INSTRUCTION = "Output as valid JSON: {\"Field1\": \"content\", \"Field2\": \"{example here}\"}. No extra text or HTML outside values."
 
 
 # ----------------------------------------------------------------
@@ -1806,6 +1820,23 @@ class AdvancedSettingsDialog(QDialog):
         self.filter_mode_checkbox.setChecked(self.config.get("FILTER_MODE", False))
         form_layout.addRow(self.filter_mode_checkbox)
 
+        # Multi-field specific settings
+        multi_field_group = QGroupBox("Multi-Field Settings")
+        multi_field_layout = QVBoxLayout()
+        
+        self.multi_field_json_checkbox = QCheckBox("Use JSON output for multi-field parsing")
+        self.multi_field_json_checkbox.setChecked(self.config.get("MULTI_FIELD_JSON_MODE", False))
+        self.multi_field_json_checkbox.setToolTip("When enabled, tries to parse AI output as JSON first before falling back to block parsing")
+        multi_field_layout.addWidget(self.multi_field_json_checkbox)
+        
+        self.multi_field_auto_append_checkbox = QCheckBox("Auto-add format instructions to prompt")
+        self.multi_field_auto_append_checkbox.setChecked(self.config.get("MULTI_FIELD_AUTO_APPEND", True))
+        self.multi_field_auto_append_checkbox.setToolTip("When enabled, appends format instructions to prompts in multi-field mode")
+        multi_field_layout.addWidget(self.multi_field_auto_append_checkbox)
+        
+        multi_field_group.setLayout(multi_field_layout)
+        layout.addWidget(multi_field_group)
+
         layout.addLayout(form_layout)
 
         # Buttons
@@ -1848,20 +1879,35 @@ class UpdateOmniPromptDialog(QDialog):
         self.worker = None
         self.setMinimumSize(800, 600)  # Set your desired minimum width and height
         # You could also use self.resize(800, 600) if you want it to open at a fixed size
-        self.setup_ui()
 
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.multi_field_mode = self.manager.config.get(
             "MULTI_FIELD_MODE", False
         )  # Initialize from config
         self.auto_detect_fields = []  # Store auto-detected field names
+        # Multi-field UI elements
+        self.multi_field_group_box = None
+        self.json_mode_checkbox = None
+        self.auto_append_checkbox = None
+        self.available_fields_label = None
+        self.test_parse_button = None
+        # Note type status
+        self.note_type_status_label = None
         # Global progress tracking
         self.total_notes = 0
         self.global_progress_indeterminate = False
+        
+        self.setup_ui()
 
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
         left_panel = QVBoxLayout()
+
+        # Note type status label
+        self.note_type_status_label = QLabel("")
+        self.update_note_type_status()
+        left_panel.addWidget(self.note_type_status_label)
+        left_panel.addSpacing(10)  # Add some spacing
 
         # Saved Prompts
         left_panel.addWidget(QLabel("Saved Prompts:"))
@@ -2111,11 +2157,99 @@ class UpdateOmniPromptDialog(QDialog):
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
 
+        # Create or destroy the multi-field guidance group box
         if self.multi_field_mode:
             # Multi-field mode setup: Remove "Original" column
             self.table.setColumnCount(2)
             self.table.setHorizontalHeaderLabels(["Progress", "Generated"])
 
+            # Create multi-field guidance group box (vertical layout)
+            if self.multi_field_group_box is None:
+                self.multi_field_group_box = QGroupBox("Multi-Field Output Settings")
+                self.multi_field_group_box.setToolTip(MULTI_FIELD_TOOLTIP)
+                group_layout = QVBoxLayout()
+                
+                # Pro tip label
+                pro_tip_label = QLabel(MULTI_FIELD_PRO_TIP)
+                pro_tip_label.setWordWrap(True)
+                pro_tip_label.setStyleSheet("font-style: italic; color: #666;")
+                group_layout.addWidget(pro_tip_label)
+                
+                # Auto-add format instructions checkbox
+                self.auto_append_checkbox = QCheckBox("Auto-add format instructions to prompt?")
+                self.auto_append_checkbox.setChecked(
+                    self.manager.config.get("MULTI_FIELD_AUTO_APPEND", True)
+                )
+                self.auto_append_checkbox.stateChanged.connect(self.on_auto_append_changed)
+                group_layout.addWidget(self.auto_append_checkbox)
+                
+                # Custom format instructions
+                custom_instructions_label = QLabel("Custom Format Instructions:")
+                group_layout.addWidget(custom_instructions_label)
+                self.custom_instructions_edit = QTextEdit()
+                self.custom_instructions_edit.setPlainText(
+                    self.manager.config.get("MULTI_FIELD_CUSTOM_INSTRUCTIONS", "")
+                )
+                self.custom_instructions_edit.setPlaceholderText("Add custom format instructions here (e.g., 'Use bullet points in content')")
+                self.custom_instructions_edit.setMaximumHeight(100)
+                self.custom_instructions_edit.textChanged.connect(self.on_custom_instructions_changed)
+                group_layout.addWidget(self.custom_instructions_edit)
+                
+                # JSON mode checkbox
+                self.json_mode_checkbox = QCheckBox("Use JSON output?")
+                self.json_mode_checkbox.setChecked(
+                    self.manager.config.get("MULTI_FIELD_JSON_MODE", False)
+                )
+                self.json_mode_checkbox.stateChanged.connect(self.on_json_mode_changed)
+                group_layout.addWidget(self.json_mode_checkbox)
+                
+                # Available fields display (selectable and with import button)
+                if self.notes:
+                    first_note = self.notes[0]
+                    model = mw.col.models.get(first_note.mid)
+                    if model:
+                        fields = mw.col.models.field_names(model)
+                        fields_text = ", ".join(fields)
+                        fields_for_copy = "```\n" + "\n".join(fields) + "\n```"
+                        
+                        # Label
+                        fields_label = QLabel("Available note fields:")
+                        fields_label.setToolTip("Available field names in the selected note type. Copy from the text box below or use Import button.")
+                        group_layout.addWidget(fields_label)
+                        
+                        # Text edit for selectable fields
+                        self.available_fields_edit = QTextEdit()
+                        self.available_fields_edit.setPlainText(fields_text)
+                        self.available_fields_edit.setMaximumHeight(80)
+                        self.available_fields_edit.setReadOnly(True)
+                        self.available_fields_edit.setToolTip("Click and drag to select field names. Use Import button to copy formatted list to prompt.")
+                        group_layout.addWidget(self.available_fields_edit)
+                        
+                        # Import button
+                        import_button_layout = QHBoxLayout()
+                        self.import_fields_button = QPushButton("Import Available Fields")
+                        self.import_fields_button.setToolTip(f"Copy formatted field list to clipboard and insert into prompt at cursor position:\n{fields_for_copy}")
+                        self.import_fields_button.clicked.connect(self.import_fields_to_prompt)
+                        import_button_layout.addWidget(self.import_fields_button)
+                        import_button_layout.addStretch()
+                        group_layout.addLayout(import_button_layout)
+                
+                self.multi_field_group_box.setLayout(group_layout)
+                
+                # Insert group box after the multi-field checkbox
+                layout = self.layout().itemAt(0).layout()
+                try:
+                    insert_idx = [
+                        layout.itemAt(i).widget() for i in range(layout.count())
+                    ].index(self.multi_field_checkbox) + 1
+                    layout.insertWidget(insert_idx, self.multi_field_group_box)
+                except (ValueError, AttributeError):
+                    layout.addWidget(self.multi_field_group_box)
+            
+            # Show the group box
+            if self.multi_field_group_box:
+                self.multi_field_group_box.show()
+            
             # Add parse button if it doesn't exist
             if not hasattr(self, "parse_fields_button"):
                 self.parse_fields_button = QPushButton("Re-Parse Fields for All Rows")
@@ -2125,21 +2259,125 @@ class UpdateOmniPromptDialog(QDialog):
                     insert_idx = [
                         layout.itemAt(i).widget() for i in range(layout.count())
                     ].index(self.multi_field_checkbox) + 1
+                    # Insert after the group box if it exists
+                    if self.multi_field_group_box:
+                        insert_idx = [
+                            layout.itemAt(i).widget() for i in range(layout.count())
+                        ].index(self.multi_field_group_box) + 1
                     layout.insertWidget(insert_idx, self.parse_fields_button)
                 except (ValueError, AttributeError):
                     layout.addWidget(self.parse_fields_button)
+                    
+            # Add "Test Parse on 1 Note" button next to Start button if not exists
+            if not hasattr(self, "test_parse_button"):
+                self.test_parse_button = QPushButton("Test Parse on 1 Note")
+                self.test_parse_button.clicked.connect(self.test_parse_single_note)
+                # Find the start button position
+                layout = self.layout().itemAt(0).layout()
+                try:
+                    start_idx = [
+                        layout.itemAt(i).widget() for i in range(layout.count())
+                    ].index(self.start_button)
+                    # Insert after start button
+                    layout.insertWidget(start_idx + 1, self.test_parse_button)
+                except (ValueError, AttributeError):
+                    layout.addWidget(self.test_parse_button)
         else:
             # Single-field mode cleanup: Restore "Original" column
             self.table.setColumnCount(3)
             self.table.setHorizontalHeaderLabels(["Progress", "Original", "Generated"])
 
+            # Hide multi-field guidance group box if it exists
+            if self.multi_field_group_box:
+                self.multi_field_group_box.hide()
+            
             # Remove parse button if it exists
-            if hasattr(self, "parse_fields_button"):
+            if hasattr(self, "parse_fields_button") and self.parse_fields_button is not None:
                 self.parse_fields_button.deleteLater()
                 del self.parse_fields_button
 
+            # Remove test parse button if it exists
+            if hasattr(self, "test_parse_button") and self.test_parse_button is not None:
+                self.test_parse_button.deleteLater()
+                del self.test_parse_button
+
             # Clear detected fields
             self.auto_detect_fields = []
+
+    def on_auto_append_changed(self, state):
+        """Handle auto-append format instructions checkbox change"""
+        is_checked = bool(state)
+        self.manager.config["MULTI_FIELD_AUTO_APPEND"] = is_checked
+        try:
+            self.manager.save_config()
+        except Exception as e:
+            logger.exception("Failed to save multi-field auto-append setting:")
+            if self.manager.config.get("DEBUG_MODE", False):
+                safe_show_info(f"Failed to save setting: {str(e)}")
+
+    def on_json_mode_changed(self, state):
+        """Handle JSON mode checkbox change"""
+        is_checked = bool(state)
+        self.manager.config["MULTI_FIELD_JSON_MODE"] = is_checked
+        try:
+            self.manager.save_config()
+        except Exception as e:
+            logger.exception("Failed to save multi-field JSON mode setting:")
+            if self.manager.config.get("DEBUG_MODE", False):
+                safe_show_info(f"Failed to save setting: {str(e)}")
+
+    def on_custom_instructions_changed(self):
+        """Handle custom format instructions text change"""
+        custom_instructions = self.custom_instructions_edit.toPlainText()
+        self.manager.config["MULTI_FIELD_CUSTOM_INSTRUCTIONS"] = custom_instructions
+        try:
+            self.manager.save_config()
+        except Exception as e:
+            logger.exception("Failed to save custom format instructions:")
+            if self.manager.config.get("DEBUG_MODE", False):
+                safe_show_info(f"Failed to save setting: {str(e)}")
+
+    def test_parse_single_note(self):
+        """Test parse on the first note only, showing preview and warnings"""
+        if not self.notes:
+            safe_show_info("No notes available for testing.")
+            return
+        
+        if not self.multi_field_mode:
+            safe_show_info("Enable 'Auto-detect multiple output fields' first.")
+            return
+        
+        # Get the first note
+        note = self.notes[0]
+        prompt_template = self.prompt_edit.toPlainText()
+        
+        # Format prompt with note fields
+        try:
+            formatted_prompt = prompt_template.format(**note)
+        except KeyError as e:
+            safe_show_info(f"Missing field {e} in note {note.id}")
+            return
+        
+        # Generate AI response for this single note
+        try:
+            explanation = self.manager.generate_ai_response(formatted_prompt)
+        except Exception as e:
+            safe_show_info(f"Failed to generate AI response: {str(e)}")
+            return
+        
+        # Parse the output
+        field_map = self.parse_multi_field_output(explanation)
+        
+        if not field_map:
+            safe_show_info("No structure found—check prompt format.")
+            return
+        
+        # Show preview
+        preview_text = f"Parsed {len(field_map)} fields from AI output:\n\n"
+        for field_name, content in field_map.items():
+            preview_text += f"{field_name}: {content[:100]}...\n" if len(content) > 100 else f"{field_name}: {content}\n"
+        
+        safe_show_info(preview_text)
 
     def start_processing(self):
         note_prompts = []
@@ -2154,6 +2392,48 @@ class UpdateOmniPromptDialog(QDialog):
         filter_mode = self.manager.config.get("FILTER_MODE", False)
         skipped_count = 0
 
+        # Note type consistency check (for multi-field mode)
+        if self.multi_field_mode and len(self.notes) > 1:
+            unique_model_ids = set(note.mid for note in self.notes)
+            if len(unique_model_ids) > 1:
+                # Count notes per model
+                model_counts = {}
+                for note in self.notes:
+                    model_counts[note.mid] = model_counts.get(note.mid, 0) + 1
+                
+                # Find most common model
+                common_mid = max(model_counts, key=model_counts.get)
+                common_count = model_counts[common_mid]
+                total_count = len(self.notes)
+                
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Icon.Warning)
+                msg.setWindowTitle("Multiple Note Types Detected")
+                msg.setText(f"Selected notes use multiple types ({len(unique_model_ids)} total).")
+                msg.setInformativeText(
+                    f"Multi-field works best on one type to avoid field mismatches.\n\n"
+                    f"Proceed with all {total_count} notes, or filter to the most common "
+                    f"({common_count} notes of type {common_mid})?"
+                )
+                
+                # Add custom buttons
+                proceed_btn = msg.addButton("Proceed with all", QMessageBox.ButtonRole.YesRole)
+                filter_btn = msg.addButton(f"Filter to {common_count} notes", QMessageBox.ButtonRole.NoRole)
+                cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                
+                msg.exec()
+                
+                clicked = msg.clickedButton()
+                
+                if clicked == cancel_btn:
+                    return  # User cancelled
+                elif clicked == filter_btn:
+                    # Filter to most common model
+                    self.notes = [n for n in self.notes if n.mid == common_mid]
+                    if len(self.notes) == 0:
+                        safe_show_info("No notes remaining after filtering.")
+                        return
+
         for note in self.notes:
             try:
                 # Skip note if filter mode is on and output field is not empty
@@ -2164,7 +2444,32 @@ class UpdateOmniPromptDialog(QDialog):
                 ):
                     skipped_count += 1
                     continue
-                formatted_prompt = prompt_template.format(**note)
+                
+                # Apply custom format instructions for multi-field mode if enabled
+                current_prompt_template = prompt_template
+                if self.multi_field_mode:
+                    # Check if auto-append is enabled
+                    if hasattr(self, 'auto_append_checkbox') and self.auto_append_checkbox.isChecked():
+                        # Get custom instructions if available
+                        custom_instructions = ""
+                        if hasattr(self, 'custom_instructions_edit'):
+                            custom_instructions = self.custom_instructions_edit.toPlainText().strip()
+                        
+                        # Build format instructions
+                        format_instructions = ""
+                        if custom_instructions:
+                            format_instructions = f"\n\n{custom_instructions}"
+                        else:
+                            # Default format instructions based on JSON mode
+                            json_mode = self.manager.config.get("MULTI_FIELD_JSON_MODE", False)
+                            if json_mode:
+                                format_instructions = f"\n\n{MULTI_FIELD_JSON_INSTRUCTION}"
+                            else:
+                                format_instructions = f"\n\n{MULTI_FIELD_PRO_TIP}"
+                        
+                        current_prompt_template = prompt_template + format_instructions
+                
+                formatted_prompt = current_prompt_template.format(**note)
             except KeyError as e:
                 safe_show_info(f"Missing field {e} in note {note.id}")
                 continue
@@ -2254,8 +2559,30 @@ class UpdateOmniPromptDialog(QDialog):
     def parse_multi_field_output(self, explanation: str) -> dict:
         """Parse AI output into multiple fields using various patterns"""
         import re
+        import json
 
         field_map = {}
+        
+        # Try JSON parsing first if JSON mode is enabled
+        json_mode = self.manager.config.get("MULTI_FIELD_JSON_MODE", False)
+        if json_mode:
+            try:
+                # Try to parse as JSON
+                explanation_stripped = explanation.strip()
+                if explanation_stripped.startswith('{') and explanation_stripped.endswith('}'):
+                    parsed_json = json.loads(explanation_stripped)
+                    if isinstance(parsed_json, dict):
+                        for key, value in parsed_json.items():
+                            if isinstance(value, str):
+                                field_map[str(key).strip()] = value.strip()
+                            elif value is not None:
+                                field_map[str(key).strip()] = str(value).strip()
+                        logger.debug("Successfully parsed JSON output")
+                        return field_map
+            except json.JSONDecodeError as e:
+                logger.debug(f"JSON invalid—using block parsing. Error: {e}")
+            except Exception as e:
+                logger.debug(f"JSON parsing failed—using block parsing. Error: {e}")
 
         # Pattern 1: Code block markers (original)
         pattern1 = r"```\s*([\w\s]+)\s*\n([\s\S]*?)\s*```"
@@ -2379,7 +2706,48 @@ class UpdateOmniPromptDialog(QDialog):
     def save_manual_edits(self):
         """Saves the current content from the table cells to the Anki notes."""
         if self.multi_field_mode:
-            # Iterate through the generated rows (even-numbered) to get new data
+            # Check for mismatches before saving
+            mismatched_notes = 0
+            total_notes = 0
+            
+            # First pass: count mismatches
+            for row in range(0, self.table.rowCount(), 2):
+                progress_item = self.table.item(row, 0)
+                if not progress_item:
+                    continue
+                
+                total_notes += 1
+                note_id = progress_item.data(Qt.ItemDataRole.UserRole)
+                note = mw.col.get_note(note_id)
+                
+                # Count mismatches (fields with content but not in note)
+                for col, field_name in enumerate(self.auto_detect_fields, start=2):
+                    if col < self.table.columnCount():
+                        item = self.table.item(row, col)
+                        if item and item.text().strip() and field_name not in note:
+                            mismatched_notes += 1
+                            break  # Count note once if any mismatch
+            
+            # Show confirmation if mismatches > 0
+            if mismatched_notes > 0:
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Icon.Question)
+                msg.setWindowTitle("Confirm Save")
+                msg.setText(f"Save changes?")
+                msg.setInformativeText(
+                    f"{mismatched_notes} notes have partial field matches. "
+                    f"Fields not in note model will be skipped."
+                )
+                msg.setStandardButtons(
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if msg.exec() != QMessageBox.StandardButton.Yes:
+                    return
+            
+            # Second pass: save data
+            saved_count = 0
+            skipped_fields_total = 0
+            
             for row in range(0, self.table.rowCount(), 2):
                 progress_item = self.table.item(row, 0)
                 if not progress_item:
@@ -2387,24 +2755,42 @@ class UpdateOmniPromptDialog(QDialog):
 
                 note_id = progress_item.data(Qt.ItemDataRole.UserRole)
                 note = mw.col.get_note(note_id)
+                
+                saved_note = False
+                skipped_fields_note = 0
 
                 # Update each detected field (starting from column 2)
                 for col, field_name in enumerate(self.auto_detect_fields, start=2):
                     if col < self.table.columnCount():
                         item = self.table.item(row, col)
-                        if item and field_name in note:
-                            note[field_name] = item.text()
-
-                try:
-                    mw.col.update_note(note)
-                    logger.info(
-                        f"Successfully saved multi-field edits for note {note_id}"
-                    )
-                except Exception as e:
-                    logger.exception(
-                        f"Error saving manual multi-field edit for note {note_id}: {e}"
-                    )
-            safe_show_info("All multi-field edits saved to notes.")
+                        if item and item.text().strip():
+                            if field_name in note:
+                                # Apply append logic if append mode is enabled
+                                if self.append_checkbox.isChecked():
+                                    original_text = note[field_name]
+                                    note[field_name] = (original_text + "\n\n--- AI Generated ---\n" + item.text()) if original_text else item.text()
+                                else:
+                                    note[field_name] = item.text()
+                                saved_note = True
+                            else:
+                                skipped_fields_note += 1
+                                logger.info(f"Note {note_id}: Skipped '{field_name}'—no matching note field.")
+                
+                if saved_note:
+                    try:
+                        mw.col.update_note(note)
+                        saved_count += 1
+                        logger.info(f"Successfully saved multi-field edits for note {note_id}")
+                    except Exception as e:
+                        logger.exception(f"Error saving manual multi-field edit for note {note_id}: {e}")
+                
+                skipped_fields_total += skipped_fields_note
+            
+            # Show summary
+            summary_msg = f"Saved: {saved_count}/{total_notes} notes."
+            if skipped_fields_total > 0:
+                summary_msg += f" {skipped_fields_total} fields skipped due to mismatches."
+            safe_show_info(summary_msg)
         else:
             # Original single-field save logic
             output_field = self.output_field_combo.currentText().strip()
@@ -2473,6 +2859,7 @@ class UpdateOmniPromptDialog(QDialog):
         # 1. Collect field maps and all unique field names from 'Generated' rows
         all_fields = set()
         note_field_maps = []
+        note_models = {}  # Store note_id -> model for consistency check
         for row in range(0, self.table.rowCount(), 2):
             explanation = (
                 self.table.item(row, 1).text() if self.table.item(row, 1) else ""
@@ -2480,6 +2867,13 @@ class UpdateOmniPromptDialog(QDialog):
             field_map = self.parse_multi_field_output(explanation)
             note_field_maps.append(field_map)
             all_fields.update(field_map.keys())
+            
+            # Store note model for consistency check
+            progress_item = self.table.item(row, 0)
+            if progress_item:
+                note_id = progress_item.data(Qt.ItemDataRole.UserRole)
+                note = mw.col.get_note(note_id)
+                note_models[note_id] = note.mid
 
         # 2. Update table structure with the detected fields
         self.auto_detect_fields = sorted(list(all_fields))
@@ -2488,6 +2882,118 @@ class UpdateOmniPromptDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             ["Progress", "Generated"] + self.auto_detect_fields
         )
+
+        # 2a. Field mismatch handling (if we have notes)
+        field_mapping = {}  # parsed_field -> note_field mapping
+        skipped_fields = set()
+        if self.notes and all_fields:
+            # Get fields from first note's model (assume consistent model)
+            first_note = self.notes[0]
+            first_model = mw.col.models.get(first_note.mid)
+            if first_model:
+                note_fields = set(mw.col.models.field_names(first_model))
+                parsed_fields = set(self.auto_detect_fields)
+                
+                # Calculate mismatch percentage
+                if parsed_fields:
+                    mismatches = parsed_fields - note_fields
+                    mismatch_percent = len(mismatches) / len(parsed_fields) * 100
+                    
+                    if mismatch_percent > 20:  # More than 20% mismatch
+                        # Show popup with options
+                        msg = QMessageBox(self)
+                        msg.setIcon(QMessageBox.Icon.Warning)
+                        msg.setWindowTitle("Field Mismatches Detected")
+                        
+                        parsed_text = ", ".join(sorted(parsed_fields))
+                        note_text = ", ".join(sorted(note_fields))
+                        msg.setText(f"Field mismatches detected:\n\nParsed: {parsed_text}\nAvailable in note: {note_text}")
+                        msg.setInformativeText("Auto-map similar names?")
+                        
+                        # Add custom buttons
+                        auto_map_btn = msg.addButton("Auto-map similar names", QMessageBox.ButtonRole.YesRole)
+                        exact_only_btn = msg.addButton("Save only exact matches", QMessageBox.ButtonRole.NoRole)
+                        manual_btn = msg.addButton("Manual Map", QMessageBox.ButtonRole.ActionRole)
+                        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                        
+                        msg.exec()
+                        
+                        clicked = msg.clickedButton()
+                        
+                        if clicked == cancel_btn:
+                            return  # User cancelled
+                        elif clicked == auto_map_btn:
+                            # Auto-map using simple fuzzy matching
+                            for parsed_field in parsed_fields:
+                                matched = False
+                                # Try exact match first
+                                if parsed_field in note_fields:
+                                    field_mapping[parsed_field] = parsed_field
+                                    matched = True
+                                else:
+                                    # Try substring matching (case-insensitive)
+                                    for note_field in note_fields:
+                                        if parsed_field.lower() in note_field.lower():
+                                            field_mapping[parsed_field] = note_field
+                                            matched = True
+                                            break
+                                    # Try starts-with as fallback
+                                    if not matched:
+                                        for note_field in note_fields:
+                                            if note_field.lower().startswith(parsed_field.lower()[:3]):
+                                                field_mapping[parsed_field] = note_field
+                                                matched = True
+                                                break
+                                if not matched:
+                                    skipped_fields.add(parsed_field)
+                        elif clicked == exact_only_btn:
+                            # Only map exact matches
+                            for parsed_field in parsed_fields:
+                                if parsed_field in note_fields:
+                                    field_mapping[parsed_field] = parsed_field
+                                else:
+                                    skipped_fields.add(parsed_field)
+                        elif clicked == manual_btn:
+                            # Simple manual mapping - for now just use exact matches
+                            # TODO: Could implement more sophisticated dialog
+                            for parsed_field in parsed_fields:
+                                if parsed_field in note_fields:
+                                    field_mapping[parsed_field] = parsed_field
+                                else:
+                                    skipped_fields.add(parsed_field)
+                    else:
+                        # Minor mismatches, auto-map with fuzzy logic
+                        for parsed_field in parsed_fields:
+                            if parsed_field in note_fields:
+                                field_mapping[parsed_field] = parsed_field
+                            else:
+                                # Try fuzzy matching
+                                matched = False
+                                for note_field in note_fields:
+                                    if parsed_field.lower() in note_field.lower():
+                                        field_mapping[parsed_field] = note_field
+                                        matched = True
+                                        break
+                                if not matched:
+                                    skipped_fields.add(parsed_field)
+                else:
+                    # No parsed fields - show warning
+                    if len(self.notes) > 0 and self.manager.config.get("DEBUG_MODE", False):
+                        safe_show_info("No fields detected in AI output. Check prompt format.")
+        
+        # 2b. Calculate parse success rate
+        total_notes = len(note_field_maps)
+        if total_notes > 0:
+            total_fields = sum(len(fm) for fm in note_field_maps)
+            avg_fields = total_fields / total_notes if total_notes > 0 else 0
+            
+            # Show warning if parse success <50%
+            if avg_fields < 0.5 and total_notes >= 3:
+                warning_msg = f"Low parse success (average {avg_fields:.1f} fields per note across {total_notes} notes).\n"
+                warning_msg += "Try JSON mode, refine prompt, or check AI output format."
+                if self.manager.config.get("DEBUG_MODE", False):
+                    safe_show_info(warning_msg)
+                logger.warning(warning_msg)
 
         # 3. Populate all rows (generated and original) with data
         for i, field_map in enumerate(note_field_maps):
@@ -2504,31 +3010,125 @@ class UpdateOmniPromptDialog(QDialog):
 
             for col_idx, field_name in enumerate(self.auto_detect_fields):
                 target_col = 2 + col_idx
+                
+                # Use mapped field name if available
+                mapped_field = field_mapping.get(field_name, field_name) if field_mapping else field_name
+                
+                # Only populate if field exists in note (or we have mapping)
+                should_populate = mapped_field in note or (field_name in field_map and field_name not in skipped_fields)
+                
+                if should_populate:
+                    # Populate generated row with parsed content
+                    content = field_map.get(field_name, "")
+                    self.table.setItem(gen_row, target_col, QTableWidgetItem(content))
 
-                # Populate generated row with parsed content
-                self.table.setItem(
-                    gen_row, target_col, QTableWidgetItem(field_map.get(field_name, ""))
-                )
-
-                # Populate original row with content from the note
-                original_content = note[field_name] if field_name in note else ""
-                self.table.setItem(
-                    orig_row, target_col, QTableWidgetItem(original_content)
-                )
+                    # Populate original row with content from the note
+                    original_content = note[mapped_field] if mapped_field in note else ""
+                    self.table.setItem(orig_row, target_col, QTableWidgetItem(original_content))
+                else:
+                    # Clear the cell
+                    self.table.setItem(gen_row, target_col, QTableWidgetItem(""))
+                    self.table.setItem(orig_row, target_col, QTableWidgetItem(""))
 
             # 4. Conditionally save the new content to the Anki note
             if save_to_notes:
+                save_count = 0
+                skip_count = 0
                 for field_name, content in field_map.items():
-                    if field_name in note:
-                        note[field_name] = content
+                    mapped_field = field_mapping.get(field_name, field_name) if field_mapping else field_name
+                    if mapped_field in note:
+                        # Apply append logic if append mode is enabled
+                        if self.append_checkbox.isChecked():
+                            original_text = note[mapped_field]
+                            note[mapped_field] = (original_text + "\n\n--- AI Generated ---\n" + content) if original_text else content
+                        else:
+                            note[mapped_field] = content
+                        save_count += 1
+                    else:
+                        skip_count += 1
+                        if field_name not in skipped_fields:
+                            logger.info(f"Skipped '{field_name}'—no matching note field.")
+                
                 try:
-                    mw.col.update_note(note)
-                    logger.info(f"Auto-saved multi-field content for note {note_id}")
+                    if save_count > 0:
+                        mw.col.update_note(note)
+                        logger.info(f"Auto-saved {save_count} fields for note {note_id} (skipped {skip_count})")
                 except Exception as e:
-                    logger.exception(
-                        f"Error auto-saving multi-field note {note_id}: {e}"
-                    )
+                    logger.exception(f"Error auto-saving multi-field note {note_id}: {e}")
+                    
+                # Add warning for missing fields
+                if skip_count > 0 and self.manager.config.get("DEBUG_MODE", False):
+                    missing_fields = [f for f in field_map.keys() if field_mapping.get(f, f) not in note]
+                    if missing_fields:
+                        safe_show_info(f"Note {note_id}: Fields not in note model: {', '.join(missing_fields)}. Content skipped unless mapped.")
 
+
+    def import_fields_to_prompt(self):
+        """Copy formatted field list to clipboard and insert into prompt at cursor position."""
+        if not self.notes:
+            safe_show_info("No notes available.")
+            return
+        
+        first_note = self.notes[0]
+        model = mw.col.models.get(first_note.mid)
+        if not model:
+            safe_show_info("Could not get note model.")
+            return
+        
+        fields = mw.col.models.field_names(model)
+        if not fields:
+            safe_show_info("No fields found in note model.")
+            return
+        
+        # Format fields for prompt
+        formatted_fields = "```\n" + "\n".join(fields) + "\n```"
+        
+        # Copy to clipboard
+        clipboard = QApplication.clipboard()
+        clipboard.setText(formatted_fields)
+        
+        # Insert at cursor position in prompt edit
+        cursor = self.prompt_edit.textCursor()
+        cursor.insertText(formatted_fields)
+        
+        safe_show_info(f"Copied {len(fields)} fields to clipboard and inserted into prompt.")
+
+    def update_note_type_status(self):
+        """Update note type status label based on selected notes."""
+        if not self.notes:
+            self.note_type_status_label.setText("No notes selected.")
+            return
+        
+        # Get unique note types
+        model_names = set()
+        model_ids = set()
+        
+        for note in self.notes:
+            model = mw.col.models.get(note.mid)
+            if model:
+                model_ids.add(note.mid)
+                model_names.add(model['name'])
+        
+        if len(model_ids) == 0:
+            self.note_type_status_label.setText("Note type: Unknown")
+        elif len(model_ids) == 1:
+            model = mw.col.models.get(self.notes[0].mid)
+            if model:
+                self.note_type_status_label.setText(f"Note type of selected notes: {model['name']}")
+            else:
+                self.note_type_status_label.setText(f"Note type: ID {list(model_ids)[0]}")
+        else:
+            # Multiple note types - show warning
+            if len(model_names) == 1:
+                # Same name but different IDs (clones?)
+                self.note_type_status_label.setText(f"Note type: {list(model_names)[0]} (multiple IDs - clones?)")
+            else:
+                self.note_type_status_label.setText(f"Multiple note types ({len(model_ids)} types). Select one note type for multi-field mode.")
+    
+    def update_start_processing_with_custom_instructions(self):
+        """Helper method to update start_processing to use custom instructions."""
+        # This method will be called to ensure start_processing uses custom instructions
+        pass
 
 # ----------------------------------------------------------------
 # ManagePromptsDialog
