@@ -272,9 +272,10 @@ class CodeBlockParser:
         # Use provided target fields or instance fields
         target_fields = target_note_fields or self.target_note_fields
         
-        # Simple regex for ```FieldName\nContent```
-        block_pattern = r"```\s*([\w\s]+?)\s*\n([\s\S]*?)\s*```"
-        blocks = re.findall(block_pattern, text, re.DOTALL)
+        # Improved regex for ```FieldName\nContent``` with Unicode support
+        # [^`\n]+? matches any character except backtick or newline (supports Unicode, parentheses, etc.)
+        block_pattern = r"```\s*([^`\n]+?)\s*\n([\s\S]*?)\s*```"
+        blocks = re.findall(block_pattern, text, re.DOTALL | re.UNICODE)
         
         fields = {}
         for label, content in blocks:
@@ -282,6 +283,12 @@ class CodeBlockParser:
             content = content.strip().replace('\n', '<br/>')  # Anki HTML
             if label and content:
                 fields[label] = content
+        
+        # Log parsing results for debugging
+        if fields:
+            logger.debug(f"CodeBlockParser parsed {len(fields)} fields: {list(fields.keys())}")
+        else:
+            logger.debug(f"CodeBlockParser found no fields in text (length: {len(text)})")
         
         return fields
 
@@ -2033,6 +2040,13 @@ class UpdateOmniPromptDialog(QDialog):
         self.field_config_placeholder.setStyleSheet("color: gray; font-style: italic;")
         self.field_config_layout.addWidget(self.field_config_placeholder)
         
+        # Format reminder note
+        self.format_reminder_label = QLabel("Expected format in prompt: ```Field Name\nContent```")
+        self.format_reminder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.format_reminder_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px; background-color: #f5f5f5; border-radius: 3px;")
+        self.format_reminder_label.hide()  # Hidden by default, shown when multi-field mode enabled
+        self.field_config_layout.addWidget(self.format_reminder_label)
+        
         # Field selector group box (will be populated when multi-field mode is enabled)
         self.multi_field_field_selector = QGroupBox("Select Fields to Update")
         self.field_selector_layout = QVBoxLayout()
@@ -2345,10 +2359,11 @@ class UpdateOmniPromptDialog(QDialog):
         select_buttons_layout.addStretch()
         self.field_selector_layout.addLayout(select_buttons_layout)
         
-        # Show field selector and parse button
+        # Show field selector, parse button, and format reminder
         self.field_config_placeholder.hide()
         self.multi_field_field_selector.show()
         self.parse_all_button.show()
+        self.format_reminder_label.show()
         
         # Update note type status
         self.update_note_type_status()
@@ -3177,8 +3192,9 @@ class UpdateOmniPromptDialog(QDialog):
             safe_show_info("No fields found in note model.")
             return
         
-        # Format fields for prompt
-        formatted_fields = "```\n" + "\n".join(fields) + "\n```"
+        # Format fields for prompt as individual code blocks
+        # Format: ```Field Name\nContent``` (one per field, separated by newlines)
+        formatted_fields = "\n\n".join([f"```{field}\nContent```" for field in fields])
         
         # Copy to clipboard
         clipboard = QApplication.clipboard()
@@ -3188,7 +3204,7 @@ class UpdateOmniPromptDialog(QDialog):
         cursor = self.prompt_edit.textCursor()
         cursor.insertText(formatted_fields)
         
-        safe_show_info(f"Copied {len(fields)} fields to clipboard and inserted into prompt.")
+        safe_show_info(f"Copied {len(fields)} fields to clipboard and inserted into prompt as individual code blocks.")
 
     def update_note_type_status(self):
         """Update note type status label based on selected notes."""
