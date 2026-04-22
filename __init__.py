@@ -20,6 +20,7 @@ from PyQt6.QtGui import (
     QKeySequence,
     QShortcut,
     QClipboard,
+    QColor,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -43,6 +44,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QProgressBar,
+    QHeaderView,
 )
 from aqt import mw, gui_hooks
 from aqt.browser import Browser
@@ -111,10 +113,7 @@ DEFAULT_CONFIG = {
     "FILTER_MODE": False,  # Skip notes where output field is filled
     "MULTI_FIELD_MODE": False,
     "AUTO_SEND_TO_CARD": True,  # New config key for auto-sending data
-    # Multi-field specific parameters
-    "MULTI_FIELD_JSON_MODE": False,  # Use JSON output for multi-field parsing
-    "MULTI_FIELD_AUTO_APPEND": True,  # Auto-add format instructions to prompt
-    "MULTI_FIELD_CUSTOM_INSTRUCTIONS": "",  # Custom format instructions for multi-field mode
+    # Note: Multi-field specific parameters removed for simplification
     # New GPT-5.4 specific parameters
     "OPENAI_REASONING_EFFORT": "none",  # none, low, medium, high, xhigh
     "OPENAI_VERBOSITY": "medium",  # low, medium, high
@@ -152,10 +151,7 @@ CONFIG_SCHEMA = {
         "DEBUG_MODE": {"type": "boolean"},
         "FILTER_MODE": {"type": "boolean"},
         "MULTI_FIELD_MODE": {"type": "boolean"},
-        "AUTO_SEND_TO_CARD": {"type": "boolean"},  # Add to schema
-        "MULTI_FIELD_JSON_MODE": {"type": "boolean"},
-        "MULTI_FIELD_AUTO_APPEND": {"type": "boolean"},
-        "MULTI_FIELD_CUSTOM_INSTRUCTIONS": {"type": "string"},
+        "AUTO_SEND_TO_CARD": {"type": "boolean"},
         "OPENAI_REASONING_EFFORT": {"enum": ["none", "low", "medium", "high", "xhigh"]},
         "OPENAI_VERBOSITY": {"enum": ["low", "medium", "high"]},
         "SELECTED_FIELDS": {
@@ -167,12 +163,6 @@ CONFIG_SCHEMA = {
 }
 
 PROMPT_SETTINGS_FILENAME = "prompt_settings.json"
-MULTI_FIELD_PATTERN = r"```([\w\s]+)\n([^`]+)```"
-
-# Multi-field guidance constants
-MULTI_FIELD_TOOLTIP = "AI output will be parsed into fields using ```FieldName\nContent``` or <FieldName>Content</FieldName>. Works best with 2-5 fields; no limit enforced."
-MULTI_FIELD_PRO_TIP = "To reference fields use {Field Name}, to fill multiple fields, use output in this format: ```Field Name\nGenerated Content to fill in the field```"
-MULTI_FIELD_JSON_INSTRUCTION = "Output as valid JSON: {\"Field1\": \"content\", \"Field2\": \"{example here}\"}. No extra text or HTML outside values."
 
 
 # ----------------------------------------------------------------
@@ -254,6 +244,60 @@ def save_prompt_settings(settings: dict) -> None:
             json.dump(settings, f, indent=2)
     except Exception as e:
         logger.exception(f"Failed to save prompt settings to {path}:")
+
+
+# ----------------------------------------------------------------
+# CodeBlockParser
+# ----------------------------------------------------------------
+class CodeBlockParser:
+    """Simple parser for code blocks ```FieldName\nContent``` with JSON fallback."""
+    
+    def __init__(self, target_note_fields: list = None):
+        self.target_note_fields = target_note_fields or []
+
+    def parse(self, text: str, target_note_fields: list = None) -> dict:
+        """
+        Returns: {field_name: content} dict
+        Content: HTML-escaped (<br/> for \n).
+        Simple regex parser for ```FieldName\nContent``` format.
+        """
+        import re
+        
+        text = text.strip()
+        if not text:
+            return {}
+        
+        # Use provided target fields or instance fields
+        target_fields = target_note_fields or self.target_note_fields
+        
+        # Simple regex for ```FieldName\nContent```
+        block_pattern = r"```\s*([\w\s]+?)\s*\n([\s\S]*?)\s*```"
+        blocks = re.findall(block_pattern, text, re.DOTALL)
+        
+        fields = {}
+        for label, content in blocks:
+            label = label.strip()
+            content = content.strip().replace('\n', '<br/>')  # Anki HTML
+            if label and content:
+                fields[label] = content
+        
+        return fields
+
+    def suggest_mappings(self, ai_fields: list, note_fields: list) -> dict:
+        """Simple mapping: exact match or contains."""
+        mappings = {}
+        for ai in ai_fields:
+            # Exact match
+            if ai in note_fields:
+                mappings[ai] = ai
+            else:
+                # Contains match (case-insensitive)
+                matches = [nf for nf in note_fields if ai.lower() in nf.lower() or nf.lower() in ai.lower()]
+                if matches:
+                    mappings[ai] = matches[0]
+                else:
+                    mappings[ai] = ai  # Default 1:1 if no match
+        return mappings
 
 
 # ----------------------------------------------------------------
@@ -416,7 +460,7 @@ class OmniPromptManager:
         if current_version < 1.3:
             # Preserve old AI_PROVIDER (e.g., "openai" from v1.1) – don't override with new "ollama" default
             old_provider = config.get("AI_PROVIDER", "openai")
-            
+
             # Add new provider models/base URLs/test URLs with defaults, but only if missing
             new_keys = {
                 "GEMINI_MODEL": "gemini-1.5-flash",
@@ -461,6 +505,8 @@ class OmniPromptManager:
             
             config["_version"] = 1.3
             logger.info(f"Successfully migrated v{current_version} config to v1.3. Preserved old provider '{old_provider}' and added {len(new_keys)} new features (e.g., more providers, custom models).")
+        
+        # Note: Multi-field format migration removed for simplification
 
         # Final merge: Use new defaults for anything still missing, but preserve all old/existing values
         merged = DEFAULT_CONFIG.copy()
@@ -1820,22 +1866,6 @@ class AdvancedSettingsDialog(QDialog):
         self.filter_mode_checkbox.setChecked(self.config.get("FILTER_MODE", False))
         form_layout.addRow(self.filter_mode_checkbox)
 
-        # Multi-field specific settings
-        multi_field_group = QGroupBox("Multi-Field Settings")
-        multi_field_layout = QVBoxLayout()
-        
-        self.multi_field_json_checkbox = QCheckBox("Use JSON output for multi-field parsing")
-        self.multi_field_json_checkbox.setChecked(self.config.get("MULTI_FIELD_JSON_MODE", False))
-        self.multi_field_json_checkbox.setToolTip("When enabled, tries to parse AI output as JSON first before falling back to block parsing")
-        multi_field_layout.addWidget(self.multi_field_json_checkbox)
-        
-        self.multi_field_auto_append_checkbox = QCheckBox("Auto-add format instructions to prompt")
-        self.multi_field_auto_append_checkbox.setChecked(self.config.get("MULTI_FIELD_AUTO_APPEND", True))
-        self.multi_field_auto_append_checkbox.setToolTip("When enabled, appends format instructions to prompts in multi-field mode")
-        multi_field_layout.addWidget(self.multi_field_auto_append_checkbox)
-        
-        multi_field_group.setLayout(multi_field_layout)
-        layout.addWidget(multi_field_group)
 
         layout.addLayout(form_layout)
 
@@ -1886,16 +1916,18 @@ class UpdateOmniPromptDialog(QDialog):
         )  # Initialize from config
         self.auto_detect_fields = []  # Store auto-detected field names
         # Multi-field UI elements
-        self.multi_field_group_box = None
-        self.json_mode_checkbox = None
-        self.auto_append_checkbox = None
-        self.available_fields_label = None
-        self.test_parse_button = None
+        self.multi_field_field_selector = None
         # Note type status
         self.note_type_status_label = None
         # Global progress tracking
         self.total_notes = 0
         self.global_progress_indeterminate = False
+        
+        # Simplified multi-field parser and state
+        self.parser = None
+        self.target_note_fields = []
+        self.selected_field_checkboxes = {}
+        self.field_checkbox_widgets = []
         
         self.setup_ui()
 
@@ -2030,7 +2062,11 @@ class UpdateOmniPromptDialog(QDialog):
         self.toggle_multi_field_mode(self.manager.config.get("MULTI_FIELD_MODE", False))
 
     def parse_fields_for_selected(self):
-        """Parse generated text for selected rows into fields"""
+        """Parse generated text for selected rows into fields using new parser."""
+        if not self.multi_field_mode or not self.parser:
+            safe_show_info("Multi-field mode not active or parser not initialized.")
+            return
+        
         selected_rows = [
             idx.row() for idx in self.table.selectionModel().selectedRows()
         ]
@@ -2038,30 +2074,67 @@ class UpdateOmniPromptDialog(QDialog):
             safe_show_info("Please select at least one row.")
             return
 
+        total_parsed = 0
         for row in selected_rows:
-            generated_item = self.table.item(row, 2)
-            if not generated_item:
+            # In multi-field mode, generated rows are even rows (0, 2, 4...)
+            if row % 2 == 1:
+                row -= 1  # Convert to generated row
+            
+            raw_item = self.table.item(row, 1)  # Raw output column
+            if not raw_item:
                 continue
 
-            explanation = generated_item.text()
-            field_map = self.parse_multi_field_output(explanation)
-
-            # Update the table columns
-            for col, field_name in enumerate(self.auto_detect_fields, start=3):
-                # Ensure we have enough columns
-                if col >= self.table.columnCount():
-                    self.table.setColumnCount(col + 1)
-                    self.table.setHorizontalHeaderItem(
-                        col, QTableWidgetItem(f"Field {col-2}")
-                    )
-
-                # Create or get the column item
-                if self.table.item(row, col) is None:
-                    self.table.setItem(row, col, QTableWidgetItem())
-
-                # Set content if field exists in parsed output
-                if field_name in field_map:
-                    self.table.item(row, col).setText(field_map[field_name])
+            explanation = raw_item.text()
+            if not explanation.strip():
+                continue
+            
+            # Save current state to undo stack
+            current_state = {}
+            for col in range(2, self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item:
+                    current_state[col] = item.text()
+            
+            if current_state:
+                self.undo_stack.append((row, current_state))
+                self.undo_button.setEnabled(True)
+            
+            # Parse with new parser
+            fields, strategy, confidence = self.parser.parse(explanation, self.target_note_fields)
+            
+            # Apply field mappings
+            if self.mapping_combo and self.mapping_combo.currentText() == "Auto-Map (Fuzzy Match)":
+                mappings = self.parser.suggest_mappings(list(fields.keys()), self.target_note_fields)
+            else:
+                mappings = {k: k for k in fields.keys()}  # 1:1 mapping
+            
+            # Update table cells
+            for ai_field, content in fields.items():
+                target_field = mappings.get(ai_field, ai_field)
+                # Find column for this field
+                for col in range(2, self.table.columnCount()):
+                    header = self.table.horizontalHeaderItem(col)
+                    if header and header.text() == target_field:
+                        # Create or update cell
+                        if self.table.item(row, col) is None:
+                            self.table.setItem(row, col, QTableWidgetItem())
+                        self.table.item(row, col).setText(content)
+                        
+                        # Apply confidence-based color coding using QColor
+                        if confidence > 0.8:
+                            self.table.item(row, col).setBackground(QColor(200, 255, 200))  # Light green
+                            self.table.item(row, col).setToolTip(f"High confidence ({confidence:.2f}) - {strategy}")
+                        elif confidence > 0.5:
+                            self.table.item(row, col).setBackground(QColor(255, 255, 200))  # Light yellow
+                            self.table.item(row, col).setToolTip(f"Medium confidence ({confidence:.2f}) - {strategy}")
+                        else:
+                            self.table.item(row, col).setBackground(QColor(255, 200, 200))  # Light red
+                            self.table.item(row, col).setToolTip(f"Low confidence ({confidence:.2f}) - {strategy}")
+                        break
+            
+            total_parsed += 1
+        
+        safe_show_info(f"Parsed {total_parsed} selected row(s).")
 
     def on_append_checkbox_changed(self, state: int):
         logger.info(f"on_append_checkbox_changed start: state={state}")
@@ -2136,7 +2209,7 @@ class UpdateOmniPromptDialog(QDialog):
             showInfo("Prompt saved.")
 
     def toggle_multi_field_mode(self, state):
-        """Enable/disable multi-field output mode and adjust table layout."""
+        """Enable/disable multi-field output mode with simplified UI."""
         is_checked = bool(state)
         self.multi_field_mode = is_checked
 
@@ -2157,185 +2230,165 @@ class UpdateOmniPromptDialog(QDialog):
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
 
-        # Create or destroy the multi-field guidance group box
-        if self.multi_field_mode:
-            # Multi-field mode setup: Remove "Original" column
-            self.table.setColumnCount(2)
-            self.table.setHorizontalHeaderLabels(["Progress", "Generated"])
-
-            # Create multi-field guidance group box (vertical layout)
-            if self.multi_field_group_box is None:
-                self.multi_field_group_box = QGroupBox("Multi-Field Output Settings")
-                self.multi_field_group_box.setToolTip(MULTI_FIELD_TOOLTIP)
-                group_layout = QVBoxLayout()
-                
-                # Pro tip label
-                pro_tip_label = QLabel(MULTI_FIELD_PRO_TIP)
-                pro_tip_label.setWordWrap(True)
-                pro_tip_label.setStyleSheet("font-style: italic; color: #666;")
-                group_layout.addWidget(pro_tip_label)
-                
-                # Auto-add format instructions checkbox
-                self.auto_append_checkbox = QCheckBox("Auto-add format instructions to prompt?")
-                self.auto_append_checkbox.setChecked(
-                    self.manager.config.get("MULTI_FIELD_AUTO_APPEND", True)
-                )
-                self.auto_append_checkbox.stateChanged.connect(self.on_auto_append_changed)
-                group_layout.addWidget(self.auto_append_checkbox)
-                
-                # Custom format instructions
-                custom_instructions_label = QLabel("Custom Format Instructions:")
-                group_layout.addWidget(custom_instructions_label)
-                self.custom_instructions_edit = QTextEdit()
-                self.custom_instructions_edit.setPlainText(
-                    self.manager.config.get("MULTI_FIELD_CUSTOM_INSTRUCTIONS", "")
-                )
-                self.custom_instructions_edit.setPlaceholderText("Add custom format instructions here (e.g., 'Use bullet points in content')")
-                self.custom_instructions_edit.setMaximumHeight(100)
-                self.custom_instructions_edit.textChanged.connect(self.on_custom_instructions_changed)
-                group_layout.addWidget(self.custom_instructions_edit)
-                
-                # JSON mode checkbox
-                self.json_mode_checkbox = QCheckBox("Use JSON output?")
-                self.json_mode_checkbox.setChecked(
-                    self.manager.config.get("MULTI_FIELD_JSON_MODE", False)
-                )
-                self.json_mode_checkbox.stateChanged.connect(self.on_json_mode_changed)
-                group_layout.addWidget(self.json_mode_checkbox)
-                
-                # Available fields display (selectable and with import button)
-                if self.notes:
-                    first_note = self.notes[0]
-                    model = mw.col.models.get(first_note.mid)
-                    if model:
-                        fields = mw.col.models.field_names(model)
-                        fields_text = ", ".join(fields)
-                        fields_for_copy = "```\n" + "\n".join(fields) + "\n```"
-                        
-                        # Label
-                        fields_label = QLabel("Available note fields:")
-                        fields_label.setToolTip("Available field names in the selected note type. Copy from the text box below or use Import button.")
-                        group_layout.addWidget(fields_label)
-                        
-                        # Text edit for selectable fields
-                        self.available_fields_edit = QTextEdit()
-                        self.available_fields_edit.setPlainText(fields_text)
-                        self.available_fields_edit.setMaximumHeight(80)
-                        self.available_fields_edit.setReadOnly(True)
-                        self.available_fields_edit.setToolTip("Click and drag to select field names. Use Import button to copy formatted list to prompt.")
-                        group_layout.addWidget(self.available_fields_edit)
-                        
-                        # Import button
-                        import_button_layout = QHBoxLayout()
-                        self.import_fields_button = QPushButton("Import Available Fields")
-                        self.import_fields_button.setToolTip(f"Copy formatted field list to clipboard and insert into prompt at cursor position:\n{fields_for_copy}")
-                        self.import_fields_button.clicked.connect(self.import_fields_to_prompt)
-                        import_button_layout.addWidget(self.import_fields_button)
-                        import_button_layout.addStretch()
-                        group_layout.addLayout(import_button_layout)
-                
-                self.multi_field_group_box.setLayout(group_layout)
-                
-                # Insert group box after the multi-field checkbox
-                layout = self.layout().itemAt(0).layout()
-                try:
-                    insert_idx = [
-                        layout.itemAt(i).widget() for i in range(layout.count())
-                    ].index(self.multi_field_checkbox) + 1
-                    layout.insertWidget(insert_idx, self.multi_field_group_box)
-                except (ValueError, AttributeError):
-                    layout.addWidget(self.multi_field_group_box)
-            
-            # Show the group box
-            if self.multi_field_group_box:
-                self.multi_field_group_box.show()
-            
-            # Add parse button if it doesn't exist
-            if not hasattr(self, "parse_fields_button"):
-                self.parse_fields_button = QPushButton("Re-Parse Fields for All Rows")
-                self.parse_fields_button.clicked.connect(self.parse_fields_for_all_rows)
-                layout = self.layout().itemAt(0).layout()
-                try:
-                    insert_idx = [
-                        layout.itemAt(i).widget() for i in range(layout.count())
-                    ].index(self.multi_field_checkbox) + 1
-                    # Insert after the group box if it exists
-                    if self.multi_field_group_box:
-                        insert_idx = [
-                            layout.itemAt(i).widget() for i in range(layout.count())
-                        ].index(self.multi_field_group_box) + 1
-                    layout.insertWidget(insert_idx, self.parse_fields_button)
-                except (ValueError, AttributeError):
-                    layout.addWidget(self.parse_fields_button)
-                    
-            # Add "Test Parse on 1 Note" button next to Start button if not exists
-            if not hasattr(self, "test_parse_button"):
-                self.test_parse_button = QPushButton("Test Parse on 1 Note")
-                self.test_parse_button.clicked.connect(self.test_parse_single_note)
-                # Find the start button position
-                layout = self.layout().itemAt(0).layout()
-                try:
-                    start_idx = [
-                        layout.itemAt(i).widget() for i in range(layout.count())
-                    ].index(self.start_button)
-                    # Insert after start button
-                    layout.insertWidget(start_idx + 1, self.test_parse_button)
-                except (ValueError, AttributeError):
-                    layout.addWidget(self.test_parse_button)
-        else:
+        if not is_checked:
             # Single-field mode cleanup: Restore "Original" column
             self.table.setColumnCount(3)
             self.table.setHorizontalHeaderLabels(["Progress", "Original", "Generated"])
 
-            # Hide multi-field guidance group box if it exists
-            if self.multi_field_group_box:
-                self.multi_field_group_box.hide()
+            # Hide multi-field field selector if it exists
+            if self.multi_field_field_selector:
+                self.multi_field_field_selector.hide()
             
             # Remove parse button if it exists
-            if hasattr(self, "parse_fields_button") and self.parse_fields_button is not None:
-                self.parse_fields_button.deleteLater()
-                del self.parse_fields_button
+            if hasattr(self, "parse_all_button") and self.parse_all_button is not None:
+                try:
+                    self.parse_all_button.deleteLater()
+                except AttributeError:
+                    pass
+                del self.parse_all_button
+            
+            # Reset parser and state
+            self.parser = None
+            self.target_note_fields = []
+            self.selected_field_checkboxes = {}
+            self.field_checkbox_widgets = []
+            return
 
-            # Remove test parse button if it exists
-            if hasattr(self, "test_parse_button") and self.test_parse_button is not None:
-                self.test_parse_button.deleteLater()
-                del self.test_parse_button
+        # --- SIMPLIFIED MULTI-FIELD MODE SETUP ---
+        # Determine target note fields (excluding meta fields)
+        if self.notes:
+            first_note = self.notes[0]
+            model = mw.col.models.get(first_note.mid)
+            if model:
+                all_fields = mw.col.models.field_names(model)
+                self.target_note_fields = [f for f in all_fields if f not in ['Tags', 'Guid', 'Note Type']]
 
-            # Clear detected fields
-            self.auto_detect_fields = []
+        if not self.target_note_fields:
+            safe_show_info("No suitable fields found in note model. Multi-field disabled.")
+            self.multi_field_mode = False
+            self.multi_field_checkbox.setChecked(False)
+            return
 
-    def on_auto_append_changed(self, state):
-        """Handle auto-append format instructions checkbox change"""
-        is_checked = bool(state)
-        self.manager.config["MULTI_FIELD_AUTO_APPEND"] = is_checked
-        try:
-            self.manager.save_config()
-        except Exception as e:
-            logger.exception("Failed to save multi-field auto-append setting:")
-            if self.manager.config.get("DEBUG_MODE", False):
-                safe_show_info(f"Failed to save setting: {str(e)}")
+        # Initialize parser with target fields
+        self.parser = CodeBlockParser(self.target_note_fields)
 
-    def on_json_mode_changed(self, state):
-        """Handle JSON mode checkbox change"""
-        is_checked = bool(state)
-        self.manager.config["MULTI_FIELD_JSON_MODE"] = is_checked
-        try:
-            self.manager.save_config()
-        except Exception as e:
-            logger.exception("Failed to save multi-field JSON mode setting:")
-            if self.manager.config.get("DEBUG_MODE", False):
-                safe_show_info(f"Failed to save setting: {str(e)}")
+        # Get left panel layout for inserting new controls
+        left_panel = self.layout().itemAt(0).layout()
+        multi_checkbox_index = left_panel.indexOf(self.multi_field_checkbox)
 
-    def on_custom_instructions_changed(self):
-        """Handle custom format instructions text change"""
-        custom_instructions = self.custom_instructions_edit.toPlainText()
-        self.manager.config["MULTI_FIELD_CUSTOM_INSTRUCTIONS"] = custom_instructions
-        try:
-            self.manager.save_config()
-        except Exception as e:
-            logger.exception("Failed to save custom format instructions:")
-            if self.manager.config.get("DEBUG_MODE", False):
-                safe_show_info(f"Failed to save setting: {str(e)}")
+        # Insert field selector after multi-field checkbox
+        insert_idx = multi_checkbox_index + 1
+        
+        # Create field selector group box
+        self.multi_field_field_selector = QGroupBox("Select Fields to Update")
+        field_selector_layout = QVBoxLayout()
+        
+        # Create checkboxes for each field
+        self.selected_field_checkboxes = {}
+        self.field_checkbox_widgets = []
+        
+        for field_name in self.target_note_fields:
+            checkbox = QCheckBox(field_name)
+            checkbox.setChecked(True)  # Default to selected
+            self.selected_field_checkboxes[field_name] = checkbox
+            self.field_checkbox_widgets.append(checkbox)
+            field_selector_layout.addWidget(checkbox)
+        
+        # Select all/none buttons
+        select_buttons_layout = QHBoxLayout()
+        select_all_button = QPushButton("Select All")
+        select_all_button.clicked.connect(lambda: self._select_all_fields(True))
+        select_none_button = QPushButton("Select None")
+        select_none_button.clicked.connect(lambda: self._select_all_fields(False))
+        select_buttons_layout.addWidget(select_all_button)
+        select_buttons_layout.addWidget(select_none_button)
+        select_buttons_layout.addStretch()
+        field_selector_layout.addLayout(select_buttons_layout)
+        
+        # Parse button
+        self.parse_all_button = QPushButton("Parse All")
+        self.parse_all_button.clicked.connect(self.parse_all_rows)
+        self.parse_all_button.setToolTip("Parse AI output into selected fields for all notes")
+        field_selector_layout.addWidget(self.parse_all_button)
+        
+        self.multi_field_field_selector.setLayout(field_selector_layout)
+        left_panel.insertWidget(insert_idx, self.multi_field_field_selector)
+        
+        # Update note type status
+        self.update_note_type_status()
+        
+        safe_show_info(f"Multi-field enabled. {len(self.target_note_fields)} fields available. Select which fields to update.")
+
+    def _select_all_fields(self, select_all):
+        """Select or deselect all field checkboxes."""
+        for checkbox in self.field_checkbox_widgets:
+            checkbox.setChecked(select_all)
+
+    def parse_all_rows(self):
+        """Parse AI output for all rows into selected fields."""
+        if not self.multi_field_mode or not self.parser:
+            safe_show_info("Multi-field mode not active or parser not initialized.")
+            return
+        
+        if not hasattr(self, 'selected_field_checkboxes'):
+            safe_show_info("No fields selected for parsing.")
+            return
+        
+        # Get selected fields
+        selected_fields = []
+        for field_name, checkbox in self.selected_field_checkboxes.items():
+            if checkbox.isChecked():
+                selected_fields.append(field_name)
+        
+        if not selected_fields:
+            safe_show_info("No fields selected. Please check at least one field.")
+            return
+        
+        # Ensure table has correct columns
+        if self.table.columnCount() != 2 + len(selected_fields):
+            self.table.setColumnCount(2 + len(selected_fields))
+            headers = ["Progress", "Raw Output"] + selected_fields
+            self.table.setHorizontalHeaderLabels(headers)
+            
+            # Adjust column widths
+            self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(0, 80)
+            self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            for i in range(2, self.table.columnCount()):
+                self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+                self.table.setColumnWidth(i, 150)
+        
+        total_parsed = 0
+        for row in range(self.table.rowCount()):
+            raw_item = self.table.item(row, 1)  # Raw output column
+            if not raw_item:
+                continue
+            
+            explanation = raw_item.text()
+            if not explanation.strip():
+                continue
+            
+            # Parse with current parser
+            fields = self.parser.parse(explanation, selected_fields)
+            
+            # Update table cells for selected fields
+            for field_name, content in fields.items():
+                if field_name in selected_fields:
+                    # Find column index for this field
+                    col_index = selected_fields.index(field_name) + 2
+                    
+                    # Create or update cell
+                    if self.table.item(row, col_index) is None:
+                        self.table.setItem(row, col_index, QTableWidgetItem())
+                    self.table.item(row, col_index).setText(content)
+            
+            total_parsed += 1
+        
+        if total_parsed > 0:
+            safe_show_info(f"Parsed {total_parsed} row(s) into selected fields.")
+        else:
+            safe_show_info("No rows with content to parse.")
+
 
     def test_parse_single_note(self):
         """Test parse on the first note only, showing preview and warnings"""
@@ -2448,26 +2501,9 @@ class UpdateOmniPromptDialog(QDialog):
                 # Apply custom format instructions for multi-field mode if enabled
                 current_prompt_template = prompt_template
                 if self.multi_field_mode:
-                    # Check if auto-append is enabled
-                    if hasattr(self, 'auto_append_checkbox') and self.auto_append_checkbox.isChecked():
-                        # Get custom instructions if available
-                        custom_instructions = ""
-                        if hasattr(self, 'custom_instructions_edit'):
-                            custom_instructions = self.custom_instructions_edit.toPlainText().strip()
-                        
-                        # Build format instructions
-                        format_instructions = ""
-                        if custom_instructions:
-                            format_instructions = f"\n\n{custom_instructions}"
-                        else:
-                            # Default format instructions based on JSON mode
-                            json_mode = self.manager.config.get("MULTI_FIELD_JSON_MODE", False)
-                            if json_mode:
-                                format_instructions = f"\n\n{MULTI_FIELD_JSON_INSTRUCTION}"
-                            else:
-                                format_instructions = f"\n\n{MULTI_FIELD_PRO_TIP}"
-                        
-                        current_prompt_template = prompt_template + format_instructions
+                    # Always add default format instructions for multi-field mode
+                    format_instructions = "\n\nTo fill multiple fields, use output in this format: ```Field Name\nGenerated Content to fill in the field```"
+                    current_prompt_template = prompt_template + format_instructions
                 
                 formatted_prompt = current_prompt_template.format(**note)
             except KeyError as e:
@@ -2505,28 +2541,41 @@ class UpdateOmniPromptDialog(QDialog):
             self.global_progress_indeterminate = False
 
         if self.multi_field_mode:
-            # Create two rows per note: one for generated, one for original
-            self.table.setRowCount(len(note_prompts) * 2)
-            for i, (note, _) in enumerate(note_prompts):
-                gen_row, orig_row = i * 2, i * 2 + 1
-
-                # Generated Row
+            # Simplified: single row per note
+            self.table.setRowCount(len(note_prompts))
+            for row, (note, _) in enumerate(note_prompts):
                 progress_item = QTableWidgetItem("0%")
                 progress_item.setData(Qt.ItemDataRole.UserRole, note.id)
-                self.table.setItem(gen_row, 0, progress_item)
-                self.table.setItem(
-                    gen_row, 1, QTableWidgetItem("")
-                )  # Placeholder for generated content
-
-                # Original Row
-                original_label = QTableWidgetItem("Original")
-                original_label.setData(
-                    Qt.ItemDataRole.UserRole, note.id
-                )  # Also store note_id here
-                self.table.setItem(orig_row, 0, original_label)
-                self.table.setSpan(
-                    orig_row, 0, 1, 2
-                )  # Span label across the first two columns
+                self.table.setItem(row, 0, progress_item)
+                
+                # Raw output column
+                self.table.setItem(row, 1, QTableWidgetItem(""))
+                
+                # Create columns for selected fields only
+                if hasattr(self, 'selected_field_checkboxes'):
+                    selected_fields = []
+                    for field_name, checkbox in self.selected_field_checkboxes.items():
+                        if checkbox.isChecked():
+                            selected_fields.append(field_name)
+                    
+                    # Set table columns: Progress, Raw Output, selected fields...
+                    if self.table.columnCount() != 2 + len(selected_fields):
+                        self.table.setColumnCount(2 + len(selected_fields))
+                        headers = ["Progress", "Raw Output"] + selected_fields
+                        self.table.setHorizontalHeaderLabels(headers)
+                        
+                        # Adjust column widths
+                        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+                        self.table.setColumnWidth(0, 80)
+                        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+                        for i in range(2, self.table.columnCount()):
+                            self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+                            self.table.setColumnWidth(i, 150)
+                else:
+                    # Fallback: all fields
+                    if self.table.columnCount() != 3:
+                        self.table.setColumnCount(3)
+                        self.table.setHorizontalHeaderLabels(["Progress", "Original", "Generated"])
         else:
             # Original single-field mode: one row per note
             self.table.setRowCount(len(note_prompts))
@@ -2557,52 +2606,26 @@ class UpdateOmniPromptDialog(QDialog):
         self.worker.start()
 
     def parse_multi_field_output(self, explanation: str) -> dict:
-        """Parse AI output into multiple fields using various patterns"""
-        import re
-        import json
-
-        field_map = {}
+        """Parse AI output using simple regex for ```FieldName\nContent``` format."""
+        if not self.multi_field_mode:
+            return {}  # Not in multi-field mode
         
-        # Try JSON parsing first if JSON mode is enabled
-        json_mode = self.manager.config.get("MULTI_FIELD_JSON_MODE", False)
-        if json_mode:
-            try:
-                # Try to parse as JSON
-                explanation_stripped = explanation.strip()
-                if explanation_stripped.startswith('{') and explanation_stripped.endswith('}'):
-                    parsed_json = json.loads(explanation_stripped)
-                    if isinstance(parsed_json, dict):
-                        for key, value in parsed_json.items():
-                            if isinstance(value, str):
-                                field_map[str(key).strip()] = value.strip()
-                            elif value is not None:
-                                field_map[str(key).strip()] = str(value).strip()
-                        logger.debug("Successfully parsed JSON output")
-                        return field_map
-            except json.JSONDecodeError as e:
-                logger.debug(f"JSON invalid—using block parsing. Error: {e}")
-            except Exception as e:
-                logger.debug(f"JSON parsing failed—using block parsing. Error: {e}")
-
-        # Pattern 1: Code block markers (original)
-        pattern1 = r"```\s*([\w\s]+)\s*\n([\s\S]*?)\s*```"
-        matches1 = re.findall(pattern1, explanation, re.DOTALL)
-
-        # Pattern 2: XML-like tags
-        pattern2 = r"<([\w\s]+)>\s*([\s\S]*?)\s*</\1>"
-        matches2 = re.findall(pattern2, explanation, re.DOTALL)
-
-        # Combine matches from both patterns
-        all_matches = matches1 + matches2
-
-        for field_name, field_content in all_matches:
-            # Clean up field name and content
+        if self.parser:
+            # Use CodeBlockParser if available
+            return self.parser.parse(explanation, self.target_note_fields)
+        
+        # Fallback simple regex parsing
+        import re
+        field_map = {}
+        pattern = r"```\s*([\w\s]+)\s*\n([\s\S]*?)\s*```"
+        matches = re.findall(pattern, explanation, re.DOTALL)
+        
+        for field_name, field_content in matches:
             field_name = field_name.strip()
-            field_content = field_content.strip()
-
-            # Only process non-empty fields
+            field_content = field_content.strip().replace('\n', '<br/>')  # Anki HTML
             if field_name and field_content:
                 field_map[field_name] = field_content
+        
         return field_map
 
     def update_note_result(self, note, explanation: str):
@@ -3124,6 +3147,247 @@ class UpdateOmniPromptDialog(QDialog):
                 self.note_type_status_label.setText(f"Note type: {list(model_names)[0]} (multiple IDs - clones?)")
             else:
                 self.note_type_status_label.setText(f"Multiple note types ({len(model_ids)} types). Select one note type for multi-field mode.")
+    
+    def inject_code_block_template(self, force=False):
+        """Inject code block template into prompt based on format selection."""
+        if not self.multi_field_mode:
+            return
+        
+        format_type = "json" if self.format_combo and self.format_combo.currentText().startswith("JSON") else "code_blocks"
+        self.manager.config["MULTI_FIELD_FORMAT_TYPE"] = format_type
+        self.manager.save_config()
+        
+        # Only inject if structure checkbox is checked or force=True
+        if (self.structure_checkbox and self.structure_checkbox.isChecked()) or force:
+            if format_type == "json":
+                template = "\n\nOutput as valid JSON: {\"Field1\": \"content\", \"Field2\": \"{example here}\"}. No extra text or HTML outside values."
+            else:
+                template = "\n\nTo fill multiple fields, use output in this format: ```Field Name\nGenerated Content to fill in the field```"
+            
+            current_text = self.prompt_edit.toPlainText()
+            # Remove previous template if present
+            if "Output as valid JSON:" in current_text or "To fill multiple fields" in current_text:
+                # Simple removal of known patterns
+                import re
+                current_text = re.sub(r'\n\nOutput as valid JSON:.*?(?=\n\n|$)', '', current_text, flags=re.DOTALL)
+                current_text = re.sub(r'\n\nTo fill multiple fields.*?(?=\n\n|$)', '', current_text, flags=re.DOTALL)
+                current_text = current_text.rstrip()
+            
+            # Add new template
+            new_text = current_text + template
+            self.prompt_edit.setPlainText(new_text)
+    
+    def preview_single_note(self):
+        """Enhanced preview with confidence visualization and mapping suggestions."""
+        if not self.notes:
+            safe_show_info("No notes available for testing.")
+            return
+        
+        if not self.multi_field_mode:
+            safe_show_info("Enable 'Auto-detect multiple output fields' first.")
+            return
+        
+        # Get the first note
+        note = self.notes[0]
+        prompt_template = self.prompt_edit.toPlainText()
+        
+        # Format prompt with note fields
+        try:
+            formatted_prompt = prompt_template.format(**note)
+        except KeyError as e:
+            safe_show_info(f"Missing field {e} in note {note.id}")
+            return
+        
+        # Generate AI response
+        try:
+            explanation = self.manager.generate_ai_response(formatted_prompt)
+        except Exception as e:
+            safe_show_info(f"Failed to generate AI response: {str(e)}")
+            return
+        
+        if not self.parser:
+            safe_show_info("Parser not initialized.")
+            return
+        
+        # Parse with confidence
+        fields, strategy, confidence = self.parser.parse(explanation, self.target_note_fields)
+        
+        # Create preview dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Preview Parse Results")
+        dlg.setMinimumSize(500, 400)
+        layout = QVBoxLayout(dlg)
+        
+        # Summary info
+        summary = QLabel(f"<b>Strategy:</b> {strategy} | <b>Confidence:</b> {confidence:.2f} | <b>Fields Found:</b> {len(fields)}")
+        layout.addWidget(summary)
+        
+        # Field mapping preview
+        mapping_label = QLabel("<b>Field Mapping:</b>")
+        layout.addWidget(mapping_label)
+        
+        if fields:
+            # Create table for field mapping
+            table = QTableWidget(len(fields), 3)
+            table.setHorizontalHeaderLabels(["AI Field", "Suggested Note Field", "Content Preview"])
+            table.horizontalHeader().setStretchLastSection(True)
+            
+            row = 0
+            for ai_field, content in fields.items():
+                # Suggest mapping
+                suggested = self.parser.suggest_mappings([ai_field], self.target_note_fields).get(ai_field, ai_field)
+                
+                table.setItem(row, 0, QTableWidgetItem(ai_field))
+                table.setItem(row, 1, QTableWidgetItem(suggested))
+                preview = content[:100] + "..." if len(content) > 100 else content
+                table.setItem(row, 2, QTableWidgetItem(preview))
+                
+                # Color coding based on confidence using QColor
+                if confidence > 0.8:
+                    table.item(row, 0).setBackground(QColor(200, 255, 200))  # Light green
+                elif confidence > 0.5:
+                    table.item(row, 0).setBackground(QColor(255, 255, 200))  # Light yellow
+                else:
+                    table.item(row, 0).setBackground(QColor(255, 200, 200))  # Light red
+                
+                row += 1
+            
+            table.resizeColumnsToContents()
+            layout.addWidget(table)
+        else:
+            layout.addWidget(QLabel("No fields detected."))
+        
+        # Raw output preview
+        raw_label = QLabel("<b>Raw Output (first 500 chars):</b>")
+        layout.addWidget(raw_label)
+        raw_text = QTextEdit()
+        raw_text.setPlainText(explanation[:500] + ("..." if len(explanation) > 500 else ""))
+        raw_text.setMaximumHeight(100)
+        raw_text.setReadOnly(True)
+        layout.addWidget(raw_text)
+        
+        # Confidence indicator
+        if confidence < 0.5:
+            warning = QLabel(f"⚠️ Low confidence parse ({confidence:.2f}). Consider refining prompt or format.")
+            warning.setStyleSheet("color: orange; font-weight: bold;")
+            layout.addWidget(warning)
+        
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn)
+        
+        dlg.exec()
+    
+    def parse_rows(self, all_rows=True):
+        """Parse raw output for rows, with undo stack support."""
+        if not self.multi_field_mode or not self.parser:
+            safe_show_info("Multi-field mode not active.")
+            return
+        
+        # Determine which rows to parse
+        rows_to_parse = []
+        if all_rows:
+            rows_to_parse = list(range(0, self.table.rowCount(), 2))  # Generated rows
+        else:
+            selected_rows = [idx.row() for idx in self.table.selectionModel().selectedRows()]
+            rows_to_parse = [r for r in selected_rows if r % 2 == 0]  # Only generated rows
+        
+        if not rows_to_parse:
+            safe_show_info("No rows selected for parsing.")
+            return
+        
+        total_parsed = 0
+        for row in rows_to_parse:
+            raw_item = self.table.item(row, 1)  # Raw output column
+            if not raw_item:
+                continue
+            
+            explanation = raw_item.text()
+            if not explanation.strip():
+                continue
+            
+            # Save current state to undo stack
+            current_state = {}
+            for col in range(2, self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item:
+                    current_state[col] = item.text()
+            
+            if current_state:
+                self.undo_stack.append((row, current_state))
+                self.undo_button.setEnabled(True)
+            
+            # Parse with current parser
+            fields, strategy, confidence = self.parser.parse(explanation, self.target_note_fields)
+            
+            # Apply field mappings
+            if self.mapping_combo and self.mapping_combo.currentText() == "Auto-Map (Fuzzy Match)":
+                mappings = self.parser.suggest_mappings(list(fields.keys()), self.target_note_fields)
+            else:
+                mappings = {k: k for k in fields.keys()}  # 1:1 mapping
+            
+            # Update table cells
+            for ai_field, content in fields.items():
+                target_field = mappings.get(ai_field, ai_field)
+                # Find column for this field
+                for col in range(2, self.table.columnCount()):
+                    header = self.table.horizontalHeaderItem(col)
+                    if header and header.text() == target_field:
+                        # Create or update cell
+                        if self.table.item(row, col) is None:
+                            self.table.setItem(row, col, QTableWidgetItem())
+                        self.table.item(row, col).setText(content)
+                        
+                        # Apply confidence-based color coding using QColor
+                        if confidence > 0.8:
+                            self.table.item(row, col).setBackground(QColor(200, 255, 200))  # Light green
+                            self.table.item(row, col).setToolTip(f"High confidence ({confidence:.2f}) - {strategy}")
+                        elif confidence > 0.5:
+                            self.table.item(row, col).setBackground(QColor(255, 255, 200))  # Light yellow
+                            self.table.item(row, col).setToolTip(f"Medium confidence ({confidence:.2f}) - {strategy}")
+                        else:
+                            self.table.item(row, col).setBackground(QColor(255, 200, 200))  # Light red
+                            self.table.item(row, col).setToolTip(f"Low confidence ({confidence:.2f}) - {strategy}")
+                        break
+            
+            total_parsed += 1
+        
+        safe_show_info(f"Parsed {total_parsed} row(s).")
+    
+    def apply_mappings(self, mapping_text):
+        """Apply field mappings based on combo selection."""
+        if not self.multi_field_mode or not self.parser:
+            return
+        
+        if mapping_text == "Manual Map...":
+            # TODO: Implement manual mapping dialog
+            safe_show_info("Manual mapping not yet implemented. Using auto-mapping.")
+            return
+        
+        # Auto-mapping already handled in parse_rows
+        # This just triggers re-parse of all rows with new mapping
+        if self.table.rowCount() > 0:
+            self.parse_rows(all_rows=True)
+    
+    def undo_last_parse(self):
+        """Undo the last parse operation."""
+        if not self.undo_stack:
+            return
+        
+        row, old_state = self.undo_stack.pop()
+        
+        # Restore old state
+        for col, text in old_state.items():
+            if col < self.table.columnCount():
+                if self.table.item(row, col) is None:
+                    self.table.setItem(row, col, QTableWidgetItem())
+                self.table.item(row, col).setText(text)
+                self.table.item(row, col).setBackground(QColor("white"))  # Clear color
+        
+        # Update undo button state
+        self.undo_button.setEnabled(bool(self.undo_stack))
+        
+        safe_show_info(f"Undo applied to row {row//2 + 1}.")
     
     def update_start_processing_with_custom_instructions(self):
         """Helper method to update start_processing to use custom instructions."""
