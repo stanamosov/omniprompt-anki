@@ -45,6 +45,8 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QProgressBar,
     QHeaderView,
+    QTabWidget,
+    QTabBar,
 )
 from aqt import mw, gui_hooks
 from aqt.browser import Browser
@@ -1933,37 +1935,49 @@ class UpdateOmniPromptDialog(QDialog):
 
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
-        left_panel = QVBoxLayout()
-
+        
+        # Create tab widget for left side
+        self.tab_widget = QTabWidget()
+        
+        # Tab 1: Prompt & Settings
+        self.prompt_tab = QWidget()
+        prompt_tab_layout = QVBoxLayout(self.prompt_tab)
+        
         # Note type status label
         self.note_type_status_label = QLabel("")
         self.update_note_type_status()
-        left_panel.addWidget(self.note_type_status_label)
-        left_panel.addSpacing(10)  # Add some spacing
+        prompt_tab_layout.addWidget(self.note_type_status_label)
+        prompt_tab_layout.addSpacing(10)  # Add some spacing
 
         # Saved Prompts
-        left_panel.addWidget(QLabel("Saved Prompts:"))
+        prompt_tab_layout.addWidget(QLabel("Saved Prompts:"))
         self.prompt_combo = QComboBox()
         self.prompt_combo.setEditable(True)
         self.prompt_completer = QCompleter(self)
         self.prompt_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.prompt_combo.setCompleter(self.prompt_completer)
-        left_panel.addWidget(self.prompt_combo)
+        prompt_tab_layout.addWidget(self.prompt_combo)
 
         # Prompt Template
-        left_panel.addWidget(QLabel("Prompt Template:"))
+        prompt_tab_layout.addWidget(QLabel("Prompt Template:"))
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setAcceptRichText(False)
         self.prompt_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.prompt_edit.setPlainText(self.manager.config.get("PROMPT", ""))
-        left_panel.addWidget(self.prompt_edit)
+        prompt_tab_layout.addWidget(self.prompt_edit)
 
         # Save Prompt
         self.save_prompt_button = QPushButton("Save Current Prompt")
-        left_panel.addWidget(self.save_prompt_button)
+        prompt_tab_layout.addWidget(self.save_prompt_button)
+
+        # Insert Field Template button
+        self.insert_field_template_button = QPushButton("Insert Field Template")
+        self.insert_field_template_button.clicked.connect(self.import_fields_to_prompt)
+        self.insert_field_template_button.setToolTip("Insert note field names into prompt at cursor position")
+        prompt_tab_layout.addWidget(self.insert_field_template_button)
 
         # Output Field
-        left_panel.addWidget(QLabel("Output Field:"))
+        prompt_tab_layout.addWidget(QLabel("Output Field:"))
         self.output_field_combo = QComboBox()
         if self.notes:
             first_note = self.notes[0]
@@ -1971,22 +1985,22 @@ class UpdateOmniPromptDialog(QDialog):
             if model:
                 fields = mw.col.models.field_names(model)
                 self.output_field_combo.addItems(fields)
-        left_panel.addWidget(self.output_field_combo)
+        prompt_tab_layout.addWidget(self.output_field_combo)
 
         # Append CheckBox
         self.append_checkbox = QCheckBox("Append Output")
         self.append_checkbox.setChecked(self.manager.config.get("APPEND_OUTPUT", False))
         self.append_checkbox.setToolTip("Append adds to existing content without overwriting")
         self.append_checkbox.stateChanged.connect(self.on_append_checkbox_changed)
-        left_panel.addWidget(self.append_checkbox)
+        prompt_tab_layout.addWidget(self.append_checkbox)
 
         # Add Multi-field Mode checkbox
-        self.multi_field_checkbox = QCheckBox("Auto-detect multiple output fields")
+        self.multi_field_checkbox = QCheckBox("Multi-field output")
         self.multi_field_checkbox.setChecked(
             self.manager.config.get("MULTI_FIELD_MODE", False)
         )
         self.multi_field_checkbox.stateChanged.connect(self.toggle_multi_field_mode)
-        left_panel.addWidget(self.multi_field_checkbox)
+        prompt_tab_layout.addWidget(self.multi_field_checkbox)
 
         # NEW: Auto Send Data to Card Checkbox
         self.auto_send_checkbox = QCheckBox("Automatically Send Data to Card")
@@ -1994,7 +2008,7 @@ class UpdateOmniPromptDialog(QDialog):
             self.manager.config.get("AUTO_SEND_TO_CARD", True)
         )
         self.auto_send_checkbox.stateChanged.connect(self.on_auto_send_checkbox_changed)
-        left_panel.addWidget(self.auto_send_checkbox)
+        prompt_tab_layout.addWidget(self.auto_send_checkbox)
 
         # Start / Stop / Save Edits
         self.start_button = QPushButton("Start")
@@ -2002,11 +2016,45 @@ class UpdateOmniPromptDialog(QDialog):
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
         self.save_changes_button = QPushButton("Send Data To Card")
-        left_panel.addWidget(self.start_button)
-        left_panel.addWidget(self.stop_button)
-        left_panel.addWidget(self.save_changes_button)
-
-        main_layout.addLayout(left_panel, 1)
+        prompt_tab_layout.addWidget(self.start_button)
+        prompt_tab_layout.addWidget(self.stop_button)
+        prompt_tab_layout.addWidget(self.save_changes_button)
+        
+        # Add stretch to push everything up
+        prompt_tab_layout.addStretch()
+        
+        # Tab 2: Field Configuration
+        self.field_config_tab = QWidget()
+        self.field_config_layout = QVBoxLayout(self.field_config_tab)
+        
+        # Field configuration placeholder
+        self.field_config_placeholder = QLabel("Enable 'Multi-field output' to configure fields")
+        self.field_config_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.field_config_placeholder.setStyleSheet("color: gray; font-style: italic;")
+        self.field_config_layout.addWidget(self.field_config_placeholder)
+        
+        # Field selector group box (will be populated when multi-field mode is enabled)
+        self.multi_field_field_selector = QGroupBox("Select Fields to Update")
+        self.field_selector_layout = QVBoxLayout()
+        self.multi_field_field_selector.setLayout(self.field_selector_layout)
+        self.multi_field_field_selector.hide()  # Hidden by default
+        self.field_config_layout.addWidget(self.multi_field_field_selector)
+        
+        # Parse button
+        self.parse_all_button = QPushButton("Parse All")
+        self.parse_all_button.clicked.connect(self.parse_all_rows)
+        self.parse_all_button.setToolTip("Parse AI output into selected fields for all notes")
+        self.parse_all_button.hide()  # Hidden by default
+        self.field_config_layout.addWidget(self.parse_all_button)
+        
+        self.field_config_layout.addStretch()
+        
+        # Add tabs to tab widget
+        self.tab_widget.addTab(self.prompt_tab, "Prompt & Settings")
+        self.tab_widget.addTab(self.field_config_tab, "Field Configuration")
+        
+        # Add tab widget to main layout
+        main_layout.addWidget(self.tab_widget, 1)
 
         # Table with global progress bar
         table_container = QVBoxLayout()
@@ -2235,17 +2283,14 @@ class UpdateOmniPromptDialog(QDialog):
             self.table.setColumnCount(3)
             self.table.setHorizontalHeaderLabels(["Progress", "Original", "Generated"])
 
-            # Hide multi-field field selector if it exists
+            # Hide field configuration placeholder and show field selector
+            self.field_config_placeholder.show()
             if self.multi_field_field_selector:
                 self.multi_field_field_selector.hide()
             
-            # Remove parse button if it exists
-            if hasattr(self, "parse_all_button") and self.parse_all_button is not None:
-                try:
-                    self.parse_all_button.deleteLater()
-                except AttributeError:
-                    pass
-                del self.parse_all_button
+            # Hide parse button
+            if self.parse_all_button:
+                self.parse_all_button.hide()
             
             # Reset parser and state
             self.parser = None
@@ -2272,16 +2317,11 @@ class UpdateOmniPromptDialog(QDialog):
         # Initialize parser with target fields
         self.parser = CodeBlockParser(self.target_note_fields)
 
-        # Get left panel layout for inserting new controls
-        left_panel = self.layout().itemAt(0).layout()
-        multi_checkbox_index = left_panel.indexOf(self.multi_field_checkbox)
-
-        # Insert field selector after multi-field checkbox
-        insert_idx = multi_checkbox_index + 1
-        
-        # Create field selector group box
-        self.multi_field_field_selector = QGroupBox("Select Fields to Update")
-        field_selector_layout = QVBoxLayout()
+        # Clear existing widgets from field selector layout
+        while self.field_selector_layout.count():
+            child = self.field_selector_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
         
         # Create checkboxes for each field
         self.selected_field_checkboxes = {}
@@ -2292,7 +2332,7 @@ class UpdateOmniPromptDialog(QDialog):
             checkbox.setChecked(True)  # Default to selected
             self.selected_field_checkboxes[field_name] = checkbox
             self.field_checkbox_widgets.append(checkbox)
-            field_selector_layout.addWidget(checkbox)
+            self.field_selector_layout.addWidget(checkbox)
         
         # Select all/none buttons
         select_buttons_layout = QHBoxLayout()
@@ -2303,16 +2343,12 @@ class UpdateOmniPromptDialog(QDialog):
         select_buttons_layout.addWidget(select_all_button)
         select_buttons_layout.addWidget(select_none_button)
         select_buttons_layout.addStretch()
-        field_selector_layout.addLayout(select_buttons_layout)
+        self.field_selector_layout.addLayout(select_buttons_layout)
         
-        # Parse button
-        self.parse_all_button = QPushButton("Parse All")
-        self.parse_all_button.clicked.connect(self.parse_all_rows)
-        self.parse_all_button.setToolTip("Parse AI output into selected fields for all notes")
-        field_selector_layout.addWidget(self.parse_all_button)
-        
-        self.multi_field_field_selector.setLayout(field_selector_layout)
-        left_panel.insertWidget(insert_idx, self.multi_field_field_selector)
+        # Show field selector and parse button
+        self.field_config_placeholder.hide()
+        self.multi_field_field_selector.show()
+        self.parse_all_button.show()
         
         # Update note type status
         self.update_note_type_status()
@@ -2557,6 +2593,17 @@ class UpdateOmniPromptDialog(QDialog):
                     for field_name, checkbox in self.selected_field_checkboxes.items():
                         if checkbox.isChecked():
                             selected_fields.append(field_name)
+                    
+                    # Validate that selected fields exist in note model
+                    if selected_fields and self.notes:
+                        first_note = self.notes[0]
+                        model = mw.col.models.get(first_note.mid)
+                        if model:
+                            note_fields = mw.col.models.field_names(model)
+                            invalid_fields = [f for f in selected_fields if f not in note_fields]
+                            if invalid_fields:
+                                safe_show_info(f"Error: Selected fields don't exist in note model: {', '.join(invalid_fields)}. Please uncheck them or adjust your note type.")
+                                return
                     
                     # Set table columns: Progress, Raw Output, selected fields...
                     if self.table.columnCount() != 2 + len(selected_fields):
@@ -2879,7 +2926,17 @@ class UpdateOmniPromptDialog(QDialog):
         if not self.multi_field_mode:
             return
 
-        # 1. Collect field maps and all unique field names from 'Generated' rows
+        # 1. Get selected fields from checkboxes (if available)
+        selected_fields = []
+        if hasattr(self, 'selected_field_checkboxes'):
+            for field_name, checkbox in self.selected_field_checkboxes.items():
+                if checkbox.isChecked():
+                    selected_fields.append(field_name)
+        
+        # If no fields selected, fall back to auto-detection from AI output
+        auto_detect_mode = len(selected_fields) == 0
+        
+        # 2. Collect field maps from 'Generated' rows
         all_fields = set()
         note_field_maps = []
         note_models = {}  # Store note_id -> model for consistency check
@@ -2898,13 +2955,30 @@ class UpdateOmniPromptDialog(QDialog):
                 note = mw.col.get_note(note_id)
                 note_models[note_id] = note.mid
 
-        # 2. Update table structure with the detected fields
-        self.auto_detect_fields = sorted(list(all_fields))
+        # 3. Determine which fields to use for table columns
+        if auto_detect_mode:
+            # Auto-detection mode: use fields from AI output
+            self.auto_detect_fields = sorted(list(all_fields))
+        else:
+            # User-selected mode: use selected fields
+            self.auto_detect_fields = selected_fields
+        
+        # 4. Update table structure with the determined fields
         new_column_count = 2 + len(self.auto_detect_fields)
-        self.table.setColumnCount(new_column_count)
-        self.table.setHorizontalHeaderLabels(
-            ["Progress", "Generated"] + self.auto_detect_fields
-        )
+        # Only update columns if they don't already match
+        if self.table.columnCount() != new_column_count:
+            self.table.setColumnCount(new_column_count)
+            self.table.setHorizontalHeaderLabels(
+                ["Progress", "Raw Output"] + self.auto_detect_fields
+            )
+            
+            # Adjust column widths
+            self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(0, 80)
+            self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            for i in range(2, self.table.columnCount()):
+                self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+                self.table.setColumnWidth(i, 150)
 
         # 2a. Field mismatch handling (if we have notes)
         field_mapping = {}  # parsed_field -> note_field mapping

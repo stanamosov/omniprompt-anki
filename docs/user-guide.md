@@ -134,13 +134,14 @@ Track generation progress and view original content alongside AI output during b
 The standard workflow where AI output is saved to a single field. You can choose to append to existing content or replace it.
 
 ### Multi-field Output
-OmniPrompt can parse AI responses into multiple fields automatically. Enable "Auto-detect multiple output fields" in the Update with OmniPrompt dialog. When enabled, the add-on will detect structured output and map content to the appropriate note fields.
+OmniPrompt can parse AI responses into multiple fields automatically. Enable "Multi-field output" in the Update with OmniPrompt dialog. When enabled, the add-on will detect structured output and map content to the appropriate note fields.
 
 **How to Use Multi-field Mode:**
-1. **Enable multi-field mode**: Check "Auto-detect multiple output fields" in the Update with OmniPrompt dialog
-2. **Craft your prompt**: Include field placeholders (e.g., `{Front}`) and specify the desired output format
-3. **Start processing**: The AI response will be automatically parsed into multiple fields
-4. **Review and save**: Check the parsed fields in the table, make edits if needed, then save to notes
+1. **Enable multi-field mode**: Check "Multi-field output" in the Update with OmniPrompt dialog
+2. **Configure fields**: Switch to the "Field Configuration" tab to select which fields to update
+3. **Craft your prompt**: Include field placeholders (e.g., `{Front}`) and specify the desired output format. Use the "Insert Field Template" button to quickly insert all available field names into your prompt.
+4. **Start processing**: The AI response will be automatically parsed into selected fields
+5. **Review and save**: Check the parsed fields in the table, make edits if needed, then save to notes
 
 **Supported Output Formats:**
 - **Code blocks**: ```FieldName\nContent``` (recommended for most AI models)
