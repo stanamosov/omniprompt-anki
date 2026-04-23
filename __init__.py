@@ -261,9 +261,12 @@ class CodeBlockParser:
     def __init__(self, target_note_fields: list = None):
         self.target_note_fields = target_note_fields or []
 
-    def parse(self, text: str, target_note_fields: list = None) -> dict:
+    def parse(self, text: str, target_note_fields: list = None) -> tuple:
         """
-        Returns: {field_name: content} dict
+        Returns: (fields_dict, strategy_name, confidence_score)
+        - fields_dict: {field_name: content} dict
+        - strategy_name: str describing parsing strategy used
+        - confidence_score: float 0.0-1.0 indicating parse quality
         Content: HTML-escaped (<br/> for \n).
         Simple regex parser for ```FieldName\nContent``` format.
         """
@@ -271,7 +274,7 @@ class CodeBlockParser:
         
         text = text.strip()
         if not text:
-            return {}
+            return ({}, "empty", 0.0)
         
         # Use provided target fields or instance fields
         target_fields = target_note_fields or self.target_note_fields
@@ -289,13 +292,22 @@ class CodeBlockParser:
             if label and content:
                 fields[label] = content
         
-        # Log parsing results for debugging
+        # Determine strategy and confidence
         if fields:
-            logger.info(f"CodeBlockParser parsed {len(fields)} fields: {list(fields.keys())}")
+            # Calculate confidence based on how many fields match target fields
+            if target_fields:
+                matched = sum(1 for f in fields if f in target_fields or any(f.lower() in tf.lower() for tf in target_fields))
+                confidence = min(1.0, matched / max(len(fields), 1))
+            else:
+                confidence = 0.7  # Moderate confidence when no target fields available
+            strategy = "code_blocks"
+            logger.info(f"CodeBlockParser parsed {len(fields)} fields: {list(fields.keys())} (confidence={confidence:.2f})")
         else:
+            confidence = 0.0
+            strategy = "none"
             logger.warning(f"CodeBlockParser found no fields in text (length: {len(text)}). Text preview: {text[:100]}...")
         
-        return fields
+        return (fields, strategy, confidence)
 
     def suggest_mappings(self, ai_fields: list, note_fields: list) -> dict:
         """Simple mapping: exact match or contains."""
@@ -1133,6 +1145,12 @@ class SettingsDialog(QDialog):
         self.model_combo.setToolTip("Select or type model name. Use '+' to add custom models.")
         
         # "+" button for adding custom models
+        # "-" button for removing custom models
+        self.remove_custom_model_button = QPushButton("−")
+        self.remove_custom_model_button.setToolTip("Remove current model from custom models")
+        self.remove_custom_model_button.clicked.connect(self.remove_custom_model)
+        
+        # "+" button for adding custom models
         self.add_custom_model_button = QPushButton("+")
         self.add_custom_model_button.setToolTip("Add current model as custom model")
         self.add_custom_model_button.clicked.connect(self.add_custom_model)
@@ -1141,6 +1159,7 @@ class SettingsDialog(QDialog):
         model_layout = QHBoxLayout()
         model_layout.addWidget(QLabel("Model:"))
         model_layout.addWidget(self.model_combo)
+        model_layout.addWidget(self.remove_custom_model_button)
         model_layout.addWidget(self.add_custom_model_button)
         
         provider_layout.addLayout(model_layout)
@@ -1485,7 +1504,53 @@ class SettingsDialog(QDialog):
         # Refresh the model dropdown to reflect sorted order
         self.update_model_options()
 
+    def remove_custom_model(self):
+        """Remove current model from custom models list for the current provider"""
+        provider = self.provider_combo.currentText()
+        model_name = self.model_combo.currentText().strip()
+        
+        if not model_name:
+            safe_show_info("Model name cannot be empty.")
+            return
+            
+        # Ensure CUSTOM_MODELS exists in config
+        if "CUSTOM_MODELS" not in self.config:
+            safe_show_info("No custom models to remove.")
+            return
+        
+        # Get custom models for this provider
+        custom_models = self.config["CUSTOM_MODELS"].get(provider, [])
+        
+        # Check if model is in custom models list
+        if model_name not in custom_models:
+            safe_show_info(f"'{model_name}' is not a custom model. Only custom models can be removed.")
+            return
+        
+        # Confirm removal
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Remove Custom Model?")
+        msg.setText(f"Remove '{model_name}' from custom models for {provider}?")
+        msg.setInformativeText("This only removes it from the dropdown list. The model can still be typed manually.")
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            return
+        
+        # Remove from custom models
+        custom_models.remove(model_name)
+        self.config["CUSTOM_MODELS"][provider] = custom_models
+        
+        # Refresh the model dropdown
+        self.update_model_options()
+        
+        safe_show_info(f"Removed '{model_name}' from custom models for {provider}.")
+
     def show_provider_key(self):
+
         provider = self.provider_combo.currentText()
 
         # Hide API key field for local providers
@@ -1971,6 +2036,9 @@ class UpdateOmniPromptDialog(QDialog):
         # Warning tracking (once per session)
         self.field_warning_shown = False
         
+        # Undo stack for parse operations
+        self.undo_stack = []
+        
         self.setup_ui()
 
     def setup_ui(self):
@@ -2159,6 +2227,54 @@ class UpdateOmniPromptDialog(QDialog):
         # Shortcut for Start
         sc = QShortcut(QKeySequence("Ctrl+Return"), self)
         sc.activated.connect(self.start_processing)
+
+        # Shortcut for Save Current Prompt (Ctrl+S)
+        sc_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        sc_save.activated.connect(self.save_current_prompt)
+        sc_save.setToolTip("Save Current Prompt")
+
+        # Shortcut for Send Data To Card (Ctrl+D)
+        sc_send = QShortcut(QKeySequence("Ctrl+D"), self)
+        sc_send.activated.connect(self.save_manual_edits)
+        sc_send.setToolTip("Send Data To Card")
+
+        # Shortcut for Insert Field Template (Ctrl+I)
+        sc_insert = QShortcut(QKeySequence("Ctrl+I"), self)
+        sc_insert.activated.connect(self.import_fields_to_prompt)
+        sc_insert.setToolTip("Import fields into prompt")
+
+        # Shortcut for Parse Fields on Field Config tab (Ctrl+P)
+        sc_parse = QShortcut(QKeySequence("Ctrl+P"), self)
+        sc_parse.activated.connect(self.parse_all_rows)
+        sc_parse.setToolTip("Parse Fields")
+
+        # Shortcut for Parse Prompt on Field Config tab (Ctrl+Shift+P)
+        sc_parse_prompt = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
+        sc_parse_prompt.activated.connect(self.parse_prompt_for_field_names)
+        sc_parse_prompt.setToolTip("Parse Prompt for fields")
+
+        # Shortcut to Stop processing (Escape)
+        sc_stop = QShortcut(QKeySequence("Escape"), self)
+        sc_stop.activated.connect(self.stop_processing)
+        sc_stop.setToolTip("Stop processing")
+
+        # Hidden widgets for backward compatibility (used by some methods)
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.setVisible(False)
+        self.undo_button.setEnabled(False)
+        self.undo_button.clicked.connect(self.undo_last_parse)
+
+        self.mapping_combo = QComboBox()
+        self.mapping_combo.setVisible(False)
+        self.mapping_combo.addItem("1:1 Direct Mapping")
+        self.mapping_combo.addItem("Auto-Map (Fuzzy Match)")
+
+        # Keyboard shortcuts hint label at the bottom of the prompt tab
+        self.shortcuts_label = QLabel(
+            "⌨️ Shortcuts: Ctrl+Enter=Start | Ctrl+S=Save | Ctrl+D=Send | Ctrl+I=Insert | Esc=Stop"
+        )
+        self.shortcuts_label.setStyleSheet("color: gray; font-size: 10px; padding: 2px;")
+        prompt_tab_layout.addWidget(self.shortcuts_label)
 
         # Apply initial multi-field mode state
         self.toggle_multi_field_mode(self.manager.config.get("MULTI_FIELD_MODE", False))
@@ -2459,8 +2575,8 @@ class UpdateOmniPromptDialog(QDialog):
             if not explanation.strip():
                 continue
             
-            # Parse with current parser
-            fields = self.parser.parse(explanation, selected_fields)
+            # Parse with current parser (unpack tuple: fields_dict, strategy, confidence)
+            fields, strategy, confidence = self.parser.parse(explanation, selected_fields)
             
             # Log parsed fields for debugging
             logger.debug(f"Parsing row {row}: parsed {len(fields)} fields: {list(fields.keys())}")
@@ -2760,13 +2876,16 @@ class UpdateOmniPromptDialog(QDialog):
         self.worker.start()
 
     def parse_multi_field_output(self, explanation: str) -> dict:
-        """Parse AI output using simple regex for ```FieldName\nContent``` format."""
+        """Parse AI output using simple regex for ```FieldName\nContent``` format.
+        Returns a dict {field_name: content} for backward compatibility with callers
+        that expect a dict rather than the parser's tuple."""
         if not self.multi_field_mode:
             return {}  # Not in multi-field mode
         
         if self.parser:
-            # Use CodeBlockParser if available
-            return self.parser.parse(explanation, self.target_note_fields)
+            # Use CodeBlockParser if available - unpack tuple to get just the fields dict
+            fields, strategy, confidence = self.parser.parse(explanation, self.target_note_fields)
+            return fields
         
         # Fallback simple regex parsing - updated to handle escaped newlines
         import re
@@ -2893,8 +3012,8 @@ class UpdateOmniPromptDialog(QDialog):
                 self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(i, 150)
         
-        # Parse with current parser
-        fields = self.parser.parse(explanation, selected_fields)
+        # Parse with current parser (unpack tuple: fields_dict, strategy, confidence)
+        fields, strategy, confidence = self.parser.parse(explanation, selected_fields)
         
         # Log parsed fields for debugging
         logger.info(f"Auto-parsing row {row}: parsed {len(fields)} fields: {list(fields.keys())}")
@@ -3421,23 +3540,17 @@ class UpdateOmniPromptDialog(QDialog):
         if not self.multi_field_mode:
             return
         
-        format_type = "json" if self.format_combo and self.format_combo.currentText().startswith("JSON") else "code_blocks"
-        self.manager.config["MULTI_FIELD_FORMAT_TYPE"] = format_type
-        self.manager.save_config()
+        # Default to code_blocks format (simplified)
+        format_type = "code_blocks"
         
-        # Only inject if structure checkbox is checked or force=True
-        if (self.structure_checkbox and self.structure_checkbox.isChecked()) or force:
-            if format_type == "json":
-                template = "\n\nOutput as valid JSON: {\"Field1\": \"content\", \"Field2\": \"{example here}\"}. No extra text or HTML outside values."
-            else:
-                template = "\n\nTo fill multiple fields, use output in this format: ```Field Name\nGenerated Content to fill in the field```"
+        # Only inject if force=True (structure checkbox removed, always inject when called)
+        if force:
+            template = "\n\nTo fill multiple fields, use output in this format: ```Field Name\nGenerated Content to fill in the field```"
             
             current_text = self.prompt_edit.toPlainText()
             # Remove previous template if present
-            if "Output as valid JSON:" in current_text or "To fill multiple fields" in current_text:
-                # Simple removal of known patterns
+            if "To fill multiple fields" in current_text:
                 import re
-                current_text = re.sub(r'\n\nOutput as valid JSON:.*?(?=\n\n|$)', '', current_text, flags=re.DOTALL)
                 current_text = re.sub(r'\n\nTo fill multiple fields.*?(?=\n\n|$)', '', current_text, flags=re.DOTALL)
                 current_text = current_text.rstrip()
             
@@ -3784,9 +3897,17 @@ class ManagePromptsDialog(QDialog):
         right_layout.addWidget(QLabel("Prompt Content:"))
         right_layout.addWidget(self.preview_content)
 
+        # Field info layout with label and Set button
+        field_layout = QHBoxLayout()
         self.field_info = QLabel()
+        self.set_field_button = QPushButton("Set")
+        self.set_field_button.setToolTip("Set or change the output field for this prompt")
+        self.set_field_button.clicked.connect(self.set_output_field)
+        field_layout.addWidget(self.field_info)
+        field_layout.addWidget(self.set_field_button)
+        field_layout.addStretch()
         right_layout.addWidget(QLabel("Field Mapping:"))
-        right_layout.addWidget(self.field_info)
+        right_layout.addLayout(field_layout)
 
         # Add panels to splitter
         splitter.addWidget(left_panel)
@@ -3834,8 +3955,48 @@ class ManagePromptsDialog(QDialog):
         # Show field mapping if exists
         field = prompt_settings.get(prompt_name, {}).get("outputField", "Not set")
         self.field_info.setText(f"Output field: {field}")
+        
+        # Update button text based on whether field is set
+        if field == "Not set":
+            self.set_field_button.setText("Set")
+        else:
+            self.set_field_button.setText("Change")
+
+    def set_output_field(self):
+        """Set or change the output field for the currently selected prompt."""
+        selected = self.prompt_list.selectedItems()
+        if not selected:
+            showInfo("Please select a prompt first.")
+            return
+        
+        prompt_name = selected[0].text()
+        prompt_settings = load_prompt_settings()
+        
+        current_field = prompt_settings.get(prompt_name, {}).get("outputField", "")
+        
+        # Ask user for the field name
+        field_name, ok = getText(
+            f"Enter output field name for prompt '{prompt_name}':",
+            default=current_field,
+        )
+        
+        if ok and field_name:
+            field_name = field_name.strip()
+            if field_name:
+                # Save to prompt settings
+                if prompt_name not in prompt_settings:
+                    prompt_settings[prompt_name] = {}
+                prompt_settings[prompt_name]["outputField"] = field_name
+                save_prompt_settings(prompt_settings)
+                
+                # Update the display
+                self.update_preview()
+                showInfo(f"Output field set to '{field_name}' for prompt '{prompt_name}'.")
+            else:
+                showInfo("Field name cannot be empty.")
 
     def save_changes(self):
+
         selected_items = self.prompt_list.selectedItems()
         if not selected_items:
             return

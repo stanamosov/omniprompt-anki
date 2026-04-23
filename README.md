@@ -18,7 +18,7 @@
 ✅ **Auto-Save** – Generated content can be automatically saved to selected fields.  
 ✅ **Formatting Cleanup** – Use AI to clean or modify existing text formatting.  
 ✅ **Advanced Settings** – Fine-tune timeout, delay, API options, and GPT-5.4 specific settings.  
-✅ **Keyboard Shortcuts** – Quickly process notes with hotkeys.  
+✅ **Keyboard Shortcuts** – Ctrl+Shift+O to open, Ctrl+Return to start, Ctrl+S/D/I/P shortcuts for common actions.
 
 ---
 

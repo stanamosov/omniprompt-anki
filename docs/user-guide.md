@@ -287,10 +287,28 @@ Enables partial message updates in real time for DeepSeek models. Provides visua
 
 ## Keyboard Shortcuts
 
-**Ctrl+Shift+O (Windows/Linux) / Cmd+Shift+O (macOS)** – Open the **Update with OmniPrompt** dialog in the browser.  
-**Ctrl+Return** – Immediately start processing selected notes.
+### Global Shortcut (Anki-wide)
+| Shortcut | Action |
+|----------|--------|
+| **Ctrl+Shift+O** (Win/Linux) / **Cmd+Shift+O** (macOS) | Open the **Update with OmniPrompt** dialog from the browser |
+
+### Dialog Shortcuts (inside "Update with OmniPrompt" window)
+| Shortcut | Action | Equivalent Button |
+|----------|--------|-------------------|
+| **Ctrl+Return** | Start processing selected notes | Start |
+| **Ctrl+S** | Save the current prompt | Save Current Prompt |
+| **Ctrl+D** | Send data to the Anki cards | Send Data To Card |
+| **Ctrl+I** | Insert field template at cursor position | Insert Field Template |
+| **Ctrl+P** | Parse fields (Field Configuration tab) | Parse Fields |
+| **Ctrl+Shift+P** | Parse prompt for field names | Parse Prompt |
+| **Escape** | Stop processing | Stop |
+
+> **💡 Tip:** The **Saved Prompts** dropdown can be navigated with the **Up/Down arrow keys** for quick prompt switching without a mouse.
+
+A shortcut hint is also visible at the bottom of the dialog window for quick reference.
 
 ---
+
 
 ## Troubleshooting & Logging
 
