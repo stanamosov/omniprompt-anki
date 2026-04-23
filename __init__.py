@@ -668,7 +668,7 @@ class OmniPromptManager:
         if not api_key:
             return "[Error: No xAI key found]"
 
-        model = self.config.get("XAI_MODEL", "grok-1.5")
+        model = self.config.get("XAI_MODEL", "grok-3-mini-latest")
         url = "https://api.x.ai/v1/chat/completions"
 
         headers = {
@@ -1390,37 +1390,24 @@ class SettingsDialog(QDialog):
         default_models = []
         if provider == "openai":
             default_models = [
-                "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4o", 
-                "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano",
-                "gpt-5",
-                "o3-mini", "o1-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"
+                "gpt-4o-mini", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "o3-mini"
             ]
         elif provider == "deepseek":
-            default_models = ["deepseek-chat", "deepseek-reasoner"]
+            default_models = ["deepseek-chat", "deepseek-chat"]
         elif provider == "gemini":
-            default_models = ["gemini-pro", "gemini-1.5-pro", "gemini-flash"]
+            default_models = ["gemini-flash"]
         elif provider == "anthropic":
             default_models = [
-                "claude-opus-4-latest",
-                "claude-sonnet-4-latest",
-                "claude-haiku-3.5-latest",
+                "claude-opus-4-latest"
             ]
         elif provider == "xai":
-            default_models = ["grok-3-latest", "grok-3-mini-latest"]
+            default_models = ["grok-3-mini-latest"]
         elif provider == "ollama":
             default_models = [
-                "llama3.2",
-                "llama3.1",
-                "llama2",
-                "mistral",
-                "mixtral",
-                "codellama",
-                "phi",
                 "gemma",
-                "qwen2.5",
             ]
         elif provider == "lmstudio":
-            default_models = ["local-model"]
+            default_models = ["qwen3"]
         
         # Get custom models for this provider
         custom_models = self.config.get("CUSTOM_MODELS", {}).get(provider, [])
