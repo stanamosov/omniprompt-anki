@@ -1,0 +1,10 @@
+{
+  "steps": [
+    "Fix migration version stepping (current_version not updated between steps)",
+    "Add one-time update notification on version change",
+    "Fix parse_fields_for_all_rows dual-row bug (uses old gen_row/orig_row = i*2, i*2+1)",
+    "Fix save_manual_edits auto_detect_fields bug (should use column headers)",
+    "Add _notified_version to DEFAULT_CONFIG and schema",
+    "Update manifest version if needed"
+  ]
+}

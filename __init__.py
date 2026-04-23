@@ -119,6 +119,7 @@ DEFAULT_CONFIG = {
     # New GPT-5.4 specific parameters
     "OPENAI_REASONING_EFFORT": "none",  # none, low, medium, high, xhigh
     "OPENAI_VERBOSITY": "medium",  # low, medium, high
+    "_notified_version": 0,  # Track which version we've notified about (0 = new install / un-notified)
 }
 
 CONFIG_SCHEMA = {
@@ -451,6 +452,7 @@ class OmniPromptManager:
 
     def migrate_config(self, config: dict) -> dict:
         current_version = config.get("_version", 0)
+        old_version = current_version  # Remember original for notification
         
         # If too old (pre-1.0), force full reset to new defaults (rare for v1.1 users)
         if current_version < 1.0:
@@ -459,6 +461,8 @@ class OmniPromptManager:
             api_keys = config.get("API_KEYS", {})
             reset_config = DEFAULT_CONFIG.copy()
             reset_config["API_KEYS"] = api_keys  # Salvage old keys
+            # Preserve _notified_version to avoid re-notifying after reset
+            reset_config["_notified_version"] = config.get("_notified_version", 0)
             return reset_config
 
         # For v1.1 users: Preserve old values, add new fields without override
@@ -467,9 +471,10 @@ class OmniPromptManager:
             config["OPENAI_REASONING_EFFORT"] = config.get("OPENAI_REASONING_EFFORT", "none")
             config["OPENAI_VERBOSITY"] = config.get("OPENAI_VERBOSITY", "medium")
             config["_version"] = 1.2
+            current_version = 1.2  # Update current_version for next step
             logger.debug("Migrated v1.1 config to v1.2: Added GPT-5 params.")
 
-        # For v1.2 users (or now v1.1 bumped to 1.2): Add v1.3 features
+        # For v1.2 users: Add v1.3 features
         if current_version < 1.3:
             # Preserve old AI_PROVIDER (e.g., "openai" from v1.1) – don't override with new "ollama" default
             old_provider = config.get("AI_PROVIDER", "openai")
@@ -517,7 +522,8 @@ class OmniPromptManager:
             config["AI_PROVIDER"] = old_provider
             
             config["_version"] = 1.3
-            logger.info(f"Successfully migrated v{current_version} config to v1.3. Preserved old provider '{old_provider}' and added {len(new_keys)} new features (e.g., more providers, custom models).")
+            current_version = 1.3  # Update current_version for next step
+            logger.info(f"Successfully migrated v{old_version} config to v1.3. Preserved old provider '{old_provider}' and added {len(new_keys)} new features (e.g., more providers, custom models).")
         
         # Note: Multi-field format migration removed for simplification
 
@@ -534,7 +540,27 @@ class OmniPromptManager:
                 if prov not in merged["CUSTOM_MODELS"]:
                     merged["CUSTOM_MODELS"][prov] = []
         
+        # One-time update notification: Show when version changed from old_version to current
+        # Only show if we actually migrated (old_version < current_version)
+        # and we haven't already notified for the current version
+        notified_version = merged.get("_notified_version", 0)
+        if old_version > 0 and old_version < merged["_version"] and notified_version < merged["_version"]:
+            # Schedule the notification to appear after Anki finishes loading
+            QTimer.singleShot(2000, lambda: self._show_update_notification(merged["_version"]))
+            # Mark as notified so it only shows once
+            merged["_notified_version"] = merged["_version"]
+        
         return merged
+
+    def _show_update_notification(self, new_version: float) -> None:
+        """Show a one-time update notification to the user."""
+        try:
+            from aqt.utils import showInfo
+            showInfo(
+                f"OmniPrompt updated to v{new_version} with bug fixes and improvements!"
+            )
+        except Exception as e:
+            logger.exception(f"Failed to show update notification: {e}")
 
     def validate_config(self, config: dict) -> dict:
         try:
@@ -2954,6 +2980,17 @@ class UpdateOmniPromptDialog(QDialog):
     def save_manual_edits(self):
         """Saves the current content from the table cells to the Anki notes."""
         if self.multi_field_mode:
+            # Derive field names from table column headers (columns 2+)
+            field_columns = []
+            for col in range(2, self.table.columnCount()):
+                header = self.table.horizontalHeaderItem(col)
+                if header:
+                    field_columns.append(header.text())
+            
+            if not field_columns:
+                safe_show_info("No field columns found. Please parse fields first.")
+                return
+            
             # Check for mismatches before saving
             mismatched_notes = 0
             total_notes = 0
@@ -2969,12 +3006,11 @@ class UpdateOmniPromptDialog(QDialog):
                 note = mw.col.get_note(note_id)
                 
                 # Count mismatches (fields with content but not in note)
-                for col, field_name in enumerate(self.auto_detect_fields, start=2):
-                    if col < self.table.columnCount():
-                        item = self.table.item(row, col)
-                        if item and item.text().strip() and field_name not in note:
-                            mismatched_notes += 1
-                            break  # Count note once if any mismatch
+                for field_name in field_columns:
+                    if field_name not in note:
+                        # Found a column header that doesn't match any note field
+                        mismatched_notes += 1
+                        break  # Count note once if any mismatch
             
             # Show confirmation if mismatches > 0
             if mismatched_notes > 0:
@@ -3007,8 +3043,8 @@ class UpdateOmniPromptDialog(QDialog):
                 saved_note = False
                 skipped_fields_note = 0
 
-                # Update each detected field (starting from column 2)
-                for col, field_name in enumerate(self.auto_detect_fields, start=2):
+                # Update each field column (starting from column 2) using column headers
+                for col, field_name in enumerate(field_columns, start=2):
                     if col < self.table.columnCount():
                         item = self.table.item(row, col)
                         if item and item.text().strip():
@@ -3099,6 +3135,7 @@ class UpdateOmniPromptDialog(QDialog):
 
     def parse_fields_for_all_rows(self, save_to_notes: bool = False):
         """Parse generated text for all notes into fields, updating the table layout.
+        Uses single-row-per-note format (simplified multi-field mode).
         If save_to_notes is True, also saves changes to the Anki notes.
         """
         if not self.multi_field_mode:
@@ -3112,43 +3149,22 @@ class UpdateOmniPromptDialog(QDialog):
                     selected_fields.append(field_name)
         
         # If no fields selected, fall back to auto-detection from AI output
-        auto_detect_mode = len(selected_fields) == 0
+        if not selected_fields:
+            safe_show_info("No fields selected. Please check at least one field in 'Field Configuration' tab.")
+            return
         
-        # 2. Collect field maps from 'Generated' rows
-        all_fields = set()
-        note_field_maps = []
-        note_models = {}  # Store note_id -> model for consistency check
-        for row in range(self.table.rowCount()):
-            explanation = (
-                self.table.item(row, 1).text() if self.table.item(row, 1) else ""
-            )
-            field_map = self.parse_multi_field_output(explanation)
-            note_field_maps.append(field_map)
-            all_fields.update(field_map.keys())
-            
-            # Store note model for consistency check
-            progress_item = self.table.item(row, 0)
-            if progress_item:
-                note_id = progress_item.data(Qt.ItemDataRole.UserRole)
-                note = mw.col.get_note(note_id)
-                note_models[note_id] = note.mid
-
-        # 3. Determine which fields to use for table columns
-        if auto_detect_mode:
-            # Auto-detection mode: use fields from AI output
-            self.auto_detect_fields = sorted(list(all_fields))
-        else:
-            # User-selected mode: use selected fields
-            self.auto_detect_fields = selected_fields
+        # Determine the field columns from the table headers (columns 2+)
+        field_columns = []
+        for col in range(2, self.table.columnCount()):
+            header = self.table.horizontalHeaderItem(col)
+            if header:
+                field_columns.append(header.text())
         
-        # 4. Update table structure with the determined fields
-        new_column_count = 2 + len(self.auto_detect_fields)
-        # Only update columns if they don't already match
-        if self.table.columnCount() != new_column_count:
-            self.table.setColumnCount(new_column_count)
-            self.table.setHorizontalHeaderLabels(
-                ["Progress", "Raw Output"] + self.auto_detect_fields
-            )
+        # If the table doesn't have the right columns yet, set them up now
+        if not field_columns or field_columns != selected_fields:
+            self.table.setColumnCount(2 + len(selected_fields))
+            headers = ["Progress", "Raw Output"] + selected_fields
+            self.table.setHorizontalHeaderLabels(headers)
             
             # Adjust column widths
             self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -3157,8 +3173,20 @@ class UpdateOmniPromptDialog(QDialog):
             for i in range(2, self.table.columnCount()):
                 self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(i, 150)
+            field_columns = selected_fields
+        
+        # 2. Collect field maps from all rows (single row per note)
+        all_fields = set()
+        note_field_maps = []
+        for row in range(self.table.rowCount()):
+            explanation = (
+                self.table.item(row, 1).text() if self.table.item(row, 1) else ""
+            )
+            field_map = self.parse_multi_field_output(explanation)
+            note_field_maps.append(field_map)
+            all_fields.update(field_map.keys())
 
-        # 2a. Field mismatch handling (if we have notes)
+        # 3. Field mismatch handling (if we have notes)
         field_mapping = {}  # parsed_field -> note_field mapping
         skipped_fields = set()
         if self.notes and all_fields:
@@ -3166,13 +3194,13 @@ class UpdateOmniPromptDialog(QDialog):
             first_note = self.notes[0]
             first_model = mw.col.models.get(first_note.mid)
             if first_model:
-                note_fields = set(mw.col.models.field_names(first_model))
-                parsed_fields = set(self.auto_detect_fields)
+                note_fields_set = set(mw.col.models.field_names(first_model))
+                parsed_fields_set = set(field_columns)
                 
                 # Calculate mismatch percentage
-                if parsed_fields:
-                    mismatches = parsed_fields - note_fields
-                    mismatch_percent = len(mismatches) / len(parsed_fields) * 100
+                if parsed_fields_set:
+                    mismatches = parsed_fields_set - note_fields_set
+                    mismatch_percent = len(mismatches) / len(parsed_fields_set) * 100
                     
                     if mismatch_percent > 20:  # More than 20% mismatch
                         # Show popup with options
@@ -3180,8 +3208,8 @@ class UpdateOmniPromptDialog(QDialog):
                         msg.setIcon(QMessageBox.Icon.Warning)
                         msg.setWindowTitle("Field Mismatches Detected")
                         
-                        parsed_text = ", ".join(sorted(parsed_fields))
-                        note_text = ", ".join(sorted(note_fields))
+                        parsed_text = ", ".join(sorted(parsed_fields_set))
+                        note_text = ", ".join(sorted(note_fields_set))
                         msg.setText(f"Field mismatches detected:\n\nParsed: {parsed_text}\nAvailable in note: {note_text}")
                         msg.setInformativeText("Auto-map similar names?")
                         
@@ -3199,22 +3227,22 @@ class UpdateOmniPromptDialog(QDialog):
                             return  # User cancelled
                         elif clicked == auto_map_btn:
                             # Auto-map using simple fuzzy matching
-                            for parsed_field in parsed_fields:
+                            for parsed_field in parsed_fields_set:
                                 matched = False
                                 # Try exact match first
-                                if parsed_field in note_fields:
+                                if parsed_field in note_fields_set:
                                     field_mapping[parsed_field] = parsed_field
                                     matched = True
                                 else:
                                     # Try substring matching (case-insensitive)
-                                    for note_field in note_fields:
+                                    for note_field in note_fields_set:
                                         if parsed_field.lower() in note_field.lower():
                                             field_mapping[parsed_field] = note_field
                                             matched = True
                                             break
                                     # Try starts-with as fallback
                                     if not matched:
-                                        for note_field in note_fields:
+                                        for note_field in note_fields_set:
                                             if note_field.lower().startswith(parsed_field.lower()[:3]):
                                                 field_mapping[parsed_field] = note_field
                                                 matched = True
@@ -3223,40 +3251,35 @@ class UpdateOmniPromptDialog(QDialog):
                                     skipped_fields.add(parsed_field)
                         elif clicked == exact_only_btn:
                             # Only map exact matches
-                            for parsed_field in parsed_fields:
-                                if parsed_field in note_fields:
+                            for parsed_field in parsed_fields_set:
+                                if parsed_field in note_fields_set:
                                     field_mapping[parsed_field] = parsed_field
                                 else:
                                     skipped_fields.add(parsed_field)
                         elif clicked == manual_btn:
                             # Simple manual mapping - for now just use exact matches
-                            # TODO: Could implement more sophisticated dialog
-                            for parsed_field in parsed_fields:
-                                if parsed_field in note_fields:
+                            for parsed_field in parsed_fields_set:
+                                if parsed_field in note_fields_set:
                                     field_mapping[parsed_field] = parsed_field
                                 else:
                                     skipped_fields.add(parsed_field)
                     else:
                         # Minor mismatches, auto-map with fuzzy logic
-                        for parsed_field in parsed_fields:
-                            if parsed_field in note_fields:
+                        for parsed_field in parsed_fields_set:
+                            if parsed_field in note_fields_set:
                                 field_mapping[parsed_field] = parsed_field
                             else:
                                 # Try fuzzy matching
                                 matched = False
-                                for note_field in note_fields:
+                                for note_field in note_fields_set:
                                     if parsed_field.lower() in note_field.lower():
                                         field_mapping[parsed_field] = note_field
                                         matched = True
                                         break
                                 if not matched:
                                     skipped_fields.add(parsed_field)
-                else:
-                    # No parsed fields - show warning
-                    if len(self.notes) > 0 and self.manager.config.get("DEBUG_MODE", False):
-                        safe_show_info("No fields detected in AI output. Check prompt format.")
         
-        # 2b. Calculate parse success rate
+        # 4. Calculate parse success rate
         total_notes = len(note_field_maps)
         if total_notes > 0:
             total_fields = sum(len(fm) for fm in note_field_maps)
@@ -3270,42 +3293,34 @@ class UpdateOmniPromptDialog(QDialog):
                     safe_show_info(warning_msg)
                 logger.warning(warning_msg)
 
-        # 3. Populate all rows (generated and original) with data
+        # 5. Populate all rows (single row per note) with parsed data
         for i, field_map in enumerate(note_field_maps):
-            gen_row, orig_row = i * 2, i * 2 + 1
-            progress_item = self.table.item(gen_row, 0)
+            if i >= self.table.rowCount():
+                break
+            
+            progress_item = self.table.item(i, 0)
             if not progress_item:
                 continue
 
             note_id = progress_item.data(Qt.ItemDataRole.UserRole)
             note = mw.col.get_note(note_id)
 
-            # Ensure the 'Original' label spans the new column count correctly
-            self.table.setSpan(orig_row, 0, 1, 2)
-
-            for col_idx, field_name in enumerate(self.auto_detect_fields):
+            # Update each field column based on the parsed data
+            for col_idx, field_name in enumerate(field_columns):
                 target_col = 2 + col_idx
                 
                 # Use mapped field name if available
                 mapped_field = field_mapping.get(field_name, field_name) if field_mapping else field_name
                 
-                # Only populate if field exists in note (or we have mapping)
-                should_populate = mapped_field in note or (field_name in field_map and field_name not in skipped_fields)
+                # Get parsed content for this field
+                content = field_map.get(field_name, "")
                 
-                if should_populate:
-                    # Populate generated row with parsed content
-                    content = field_map.get(field_name, "")
-                    self.table.setItem(gen_row, target_col, QTableWidgetItem(content))
+                # Create or update cell
+                if self.table.item(i, target_col) is None:
+                    self.table.setItem(i, target_col, QTableWidgetItem())
+                self.table.item(i, target_col).setText(content)
 
-                    # Populate original row with content from the note
-                    original_content = note[mapped_field] if mapped_field in note else ""
-                    self.table.setItem(orig_row, target_col, QTableWidgetItem(original_content))
-                else:
-                    # Clear the cell
-                    self.table.setItem(gen_row, target_col, QTableWidgetItem(""))
-                    self.table.setItem(orig_row, target_col, QTableWidgetItem(""))
-
-            # 4. Conditionally save the new content to the Anki note
+            # 6. Conditionally save the new content to the Anki note
             if save_to_notes:
                 save_count = 0
                 skip_count = 0
