@@ -112,6 +112,11 @@ OmniPrompt-Anki is **completely free** and open-source, created to help learners
 ## 🙏 Special Thanks
 
 Huge thanks to [u/Smooth-Put5476](https://www.reddit.com/user/Smooth-Put5476/) for their thoughtful suggestions and feedback on the [OmniPrompt-Anki Reddit thread](https://www.reddit.com/r/Anki/comments/1idzmzg/omniprompt_anki_aipowered_addon_for_anki/).  
+
+Special thanks to our GitHub contributors for their code contributions:
+- **@WolfExplode** — [https://github.com/WolfExplode](https://github.com/WolfExplode)
+- **@Alireza-Paksaz24** — [https://github.com/Alireza-Paksaz24](https://github.com/Alireza-Paksaz24)
+
 Many of the improvements in recent versions would not have been possible without their input!
 
 Your support and ideas make this project better for everyone. ❤️
