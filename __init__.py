@@ -272,23 +272,25 @@ class CodeBlockParser:
         # Use provided target fields or instance fields
         target_fields = target_note_fields or self.target_note_fields
         
-        # Improved regex for ```FieldName\nContent``` with Unicode support
-        # [^`\n]+? matches any character except backtick or newline (supports Unicode, parentheses, etc.)
-        block_pattern = r"```\s*([^`\n]+?)\s*\n([\s\S]*?)\s*```"
+        # Enhanced regex for ```FieldName\nContent``` that handles both actual newlines and escaped \n
+        # (?:\\n|\n) matches either literal backslash-n or actual newline character
+        block_pattern = r"```\s*([^`\n]+?)\s*(?:\\n|\n)([\s\S]*?)\s*```"
         blocks = re.findall(block_pattern, text, re.DOTALL | re.UNICODE)
         
         fields = {}
         for label, content in blocks:
             label = label.strip()
+            # Convert any literal \n in content to actual newlines for HTML conversion
+            content = content.replace('\\n', '\n')
             content = content.strip().replace('\n', '<br/>')  # Anki HTML
             if label and content:
                 fields[label] = content
         
         # Log parsing results for debugging
         if fields:
-            logger.debug(f"CodeBlockParser parsed {len(fields)} fields: {list(fields.keys())}")
+            logger.info(f"CodeBlockParser parsed {len(fields)} fields: {list(fields.keys())}")
         else:
-            logger.debug(f"CodeBlockParser found no fields in text (length: {len(text)})")
+            logger.warning(f"CodeBlockParser found no fields in text (length: {len(text)}). Text preview: {text[:100]}...")
         
         return fields
 
@@ -2423,6 +2425,7 @@ class UpdateOmniPromptDialog(QDialog):
                 self.table.setColumnWidth(i, 150)
         
         total_parsed = 0
+        total_updated = 0
         for row in range(self.table.rowCount()):
             raw_item = self.table.item(row, 1)  # Raw output column
             if not raw_item:
@@ -2435,21 +2438,53 @@ class UpdateOmniPromptDialog(QDialog):
             # Parse with current parser
             fields = self.parser.parse(explanation, selected_fields)
             
-            # Update table cells for selected fields
-            for field_name, content in fields.items():
-                if field_name in selected_fields:
-                    # Find column index for this field
-                    col_index = selected_fields.index(field_name) + 2
-                    
-                    # Create or update cell
-                    if self.table.item(row, col_index) is None:
-                        self.table.setItem(row, col_index, QTableWidgetItem())
-                    self.table.item(row, col_index).setText(content)
+            # Log parsed fields for debugging
+            logger.debug(f"Parsing row {row}: parsed {len(fields)} fields: {list(fields.keys())}")
+            logger.debug(f"Selected fields: {selected_fields}")
             
-            total_parsed += 1
+            # Use fuzzy matching to map AI field names to selected fields
+            if fields:
+                mappings = self.parser.suggest_mappings(list(fields.keys()), selected_fields)
+                logger.debug(f"Field mappings: {mappings}")
+            else:
+                mappings = {}
+                logger.warning(f"No fields parsed from explanation (length: {len(explanation)})")
+            
+            # Update table cells for selected fields using mappings
+            row_updated = 0
+            for ai_field, content in fields.items():
+                target_field = mappings.get(ai_field, ai_field)
+                
+                # Case-insensitive matching for selected fields
+                target_field_lower = target_field.lower().strip()
+                selected_fields_lower = [f.lower().strip() for f in selected_fields]
+                
+                if target_field_lower in selected_fields_lower:
+                    # Find column index for this field (case-insensitive)
+                    col_index = -1
+                    for i, field in enumerate(selected_fields):
+                        if field.lower().strip() == target_field_lower:
+                            col_index = i + 2
+                            break
+                    
+                    if col_index >= 2:
+                        # Create or update cell
+                        if self.table.item(row, col_index) is None:
+                            self.table.setItem(row, col_index, QTableWidgetItem())
+                        self.table.item(row, col_index).setText(content)
+                        row_updated += 1
+                        total_updated += 1
+                        logger.debug(f"Updated row {row}, column {col_index} ({selected_fields[col_index-2]}) with content length {len(content)}")
+                    else:
+                        logger.warning(f"Could not find column for field '{target_field}' (mapped from '{ai_field}') in selected fields")
+                else:
+                    logger.debug(f"Field '{target_field}' (from AI field '{ai_field}') not in selected fields")
+            
+            if row_updated > 0:
+                total_parsed += 1
         
         if total_parsed > 0:
-            safe_show_info(f"Parsed {total_parsed} row(s) into selected fields.")
+            safe_show_info(f"Parsed {total_parsed} row(s), updated {total_updated} field(s) into selected fields.")
         else:
             safe_show_info("No rows with content to parse.")
 
@@ -2705,14 +2740,17 @@ class UpdateOmniPromptDialog(QDialog):
             # Use CodeBlockParser if available
             return self.parser.parse(explanation, self.target_note_fields)
         
-        # Fallback simple regex parsing
+        # Fallback simple regex parsing - updated to handle escaped newlines
         import re
         field_map = {}
-        pattern = r"```\s*([^`\n]+?)\s*\n([\s\S]*?)\s*```"
+        # Match either literal backslash-n or actual newline, like CodeBlockParser does
+        pattern = r"```\s*([^`\n]+?)\s*(?:\\n|\n)([\s\S]*?)\s*```"
         matches = re.findall(pattern, explanation, re.DOTALL)
         
         for field_name, field_content in matches:
             field_name = field_name.strip()
+            # Convert any literal \n in content to actual newlines for HTML conversion
+            field_content = field_content.replace('\\n', '\n')
             field_content = field_content.strip().replace('\n', '<br/>')  # Anki HTML
             if field_name and field_content:
                 field_map[field_name] = field_content
@@ -2816,18 +2854,48 @@ class UpdateOmniPromptDialog(QDialog):
         # Parse with current parser
         fields = self.parser.parse(explanation, selected_fields)
         
-        # Update table cells for selected fields
-        for field_name, content in fields.items():
-            if field_name in selected_fields:
-                # Find column index for this field
-                col_index = selected_fields.index(field_name) + 2
-                
-                # Create or update cell
-                if self.table.item(row, col_index) is None:
-                    self.table.setItem(row, col_index, QTableWidgetItem())
-                self.table.item(row, col_index).setText(content)
+        # Log parsed fields for debugging
+        logger.info(f"Auto-parsing row {row}: parsed {len(fields)} fields: {list(fields.keys())}")
+        logger.info(f"Selected fields: {selected_fields}")
         
-        logger.info(f"Auto-parsed note output for row {row}")
+        # Use fuzzy matching to map AI field names to selected fields
+        if fields:
+            mappings = self.parser.suggest_mappings(list(fields.keys()), selected_fields)
+            logger.info(f"Field mappings: {mappings}")
+        else:
+            mappings = {}
+            logger.warning(f"No fields parsed from explanation (length: {len(explanation)})")
+        
+        # Update table cells for selected fields using mappings
+        updated_count = 0
+        for ai_field, content in fields.items():
+            target_field = mappings.get(ai_field, ai_field)
+            
+            # Case-insensitive matching for selected fields
+            target_field_lower = target_field.lower().strip()
+            selected_fields_lower = [f.lower().strip() for f in selected_fields]
+            
+            if target_field_lower in selected_fields_lower:
+                # Find column index for this field (case-insensitive)
+                col_index = -1
+                for i, field in enumerate(selected_fields):
+                    if field.lower().strip() == target_field_lower:
+                        col_index = i + 2
+                        break
+                
+                if col_index >= 2:
+                    # Create or update cell
+                    if self.table.item(row, col_index) is None:
+                        self.table.setItem(row, col_index, QTableWidgetItem())
+                    self.table.item(row, col_index).setText(content)
+                    updated_count += 1
+                    logger.debug(f"Updated row {row}, column {col_index} ({selected_fields[col_index-2]}) with content length {len(content)}")
+                else:
+                    logger.warning(f"Could not find column for field '{target_field}' (mapped from '{ai_field}') in selected fields")
+            else:
+                logger.debug(f"Field '{target_field}' (from AI field '{ai_field}') not in selected fields")
+        
+        logger.info(f"Auto-parsed note output for row {row}: {updated_count} fields updated")
 
     def stop_processing(self):
         if self.worker:
@@ -3576,8 +3644,8 @@ class UpdateOmniPromptDialog(QDialog):
         
         import re
         
-        # Extract field names from code blocks: ```FieldName\n
-        code_block_pattern = r"```\s*([^`\n]+?)\s*\n"
+        # Extract field names from code blocks: ```FieldName\n (handles both escaped and actual newlines)
+        code_block_pattern = r"```\s*([^`\n]+?)\s*(?:\\n|\n)"
         code_block_fields = re.findall(code_block_pattern, prompt_text, re.DOTALL)
         
         # Extract field names from plain text lines that look like field names
