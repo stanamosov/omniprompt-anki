@@ -1938,6 +1938,9 @@ class UpdateOmniPromptDialog(QDialog):
         self.selected_field_checkboxes = {}
         self.field_checkbox_widgets = []
         
+        # Warning tracking (once per session)
+        self.field_warning_shown = False
+        
         self.setup_ui()
 
     def setup_ui(self):
@@ -2047,6 +2050,13 @@ class UpdateOmniPromptDialog(QDialog):
         self.format_reminder_label.hide()  # Hidden by default, shown when multi-field mode enabled
         self.field_config_layout.addWidget(self.format_reminder_label)
         
+        # Parse Prompt button
+        self.parse_prompt_button = QPushButton("Parse Prompt")
+        self.parse_prompt_button.clicked.connect(self.parse_prompt_for_field_names)
+        self.parse_prompt_button.setToolTip("Extract field names from prompt text and update checkbox selection")
+        self.parse_prompt_button.hide()  # Hidden by default
+        self.field_config_layout.addWidget(self.parse_prompt_button)
+        
         # Field selector group box (will be populated when multi-field mode is enabled)
         self.multi_field_field_selector = QGroupBox("Select Fields to Update")
         self.field_selector_layout = QVBoxLayout()
@@ -2055,9 +2065,9 @@ class UpdateOmniPromptDialog(QDialog):
         self.field_config_layout.addWidget(self.multi_field_field_selector)
         
         # Parse button
-        self.parse_all_button = QPushButton("Parse All")
+        self.parse_all_button = QPushButton("Parse Fields")
         self.parse_all_button.clicked.connect(self.parse_all_rows)
-        self.parse_all_button.setToolTip("Parse AI output into selected fields for all notes")
+        self.parse_all_button.setToolTip("Manually parse raw AI output into field columns for all notes (auto-parsing happens automatically when each note completes)")
         self.parse_all_button.hide()  # Hidden by default
         self.field_config_layout.addWidget(self.parse_all_button)
         
@@ -2302,9 +2312,11 @@ class UpdateOmniPromptDialog(QDialog):
             if self.multi_field_field_selector:
                 self.multi_field_field_selector.hide()
             
-            # Hide parse button
+            # Hide parse buttons
             if self.parse_all_button:
                 self.parse_all_button.hide()
+            if self.parse_prompt_button:
+                self.parse_prompt_button.hide()
             
             # Reset parser and state
             self.parser = None
@@ -2359,10 +2371,11 @@ class UpdateOmniPromptDialog(QDialog):
         select_buttons_layout.addStretch()
         self.field_selector_layout.addLayout(select_buttons_layout)
         
-        # Show field selector, parse button, and format reminder
+        # Show field selector, parse buttons, and format reminder
         self.field_config_placeholder.hide()
         self.multi_field_field_selector.show()
         self.parse_all_button.show()
+        self.parse_prompt_button.show()
         self.format_reminder_label.show()
         
         # Update note type status
@@ -2617,8 +2630,24 @@ class UpdateOmniPromptDialog(QDialog):
                             note_fields = mw.col.models.field_names(model)
                             invalid_fields = [f for f in selected_fields if f not in note_fields]
                             if invalid_fields:
-                                safe_show_info(f"Error: Selected fields don't exist in note model: {', '.join(invalid_fields)}. Please uncheck them or adjust your note type.")
-                                return
+                                # Show warning once per session
+                                if not self.field_warning_shown:
+                                    msg = QMessageBox(self)
+                                    msg.setIcon(QMessageBox.Icon.Warning)
+                                    msg.setWindowTitle("Field Warning")
+                                    msg.setText(f"The following fields in your prompt don't exist in the note model: {', '.join(invalid_fields)}.")
+                                    msg.setInformativeText("These may be formatting examples. They will be ignored during processing.")
+                                    msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+                                    msg.setDefaultButton(QMessageBox.StandardButton.Ok)
+                                    
+                                    result = msg.exec()
+                                    if result == QMessageBox.StandardButton.Cancel:
+                                        return  # User cancelled
+                                    
+                                    self.field_warning_shown = True
+                                
+                                # Filter out invalid fields from selected_fields
+                                selected_fields = [f for f in selected_fields if f in note_fields]
                     
                     # Set table columns: Progress, Raw Output, selected fields...
                     if self.table.columnCount() != 2 + len(selected_fields):
@@ -2679,7 +2708,7 @@ class UpdateOmniPromptDialog(QDialog):
         # Fallback simple regex parsing
         import re
         field_map = {}
-        pattern = r"```\s*([\w\s]+)\s*\n([\s\S]*?)\s*```"
+        pattern = r"```\s*([^`\n]+?)\s*\n([\s\S]*?)\s*```"
         matches = re.findall(pattern, explanation, re.DOTALL)
         
         for field_name, field_content in matches:
@@ -2709,6 +2738,9 @@ class UpdateOmniPromptDialog(QDialog):
                     logger.info(
                         f"Multi-field: Stored raw explanation for note {note.id}."
                     )
+                    
+                    # Auto-parse the raw output for this note with 100ms delay
+                    QTimer.singleShot(100, lambda r=row, e=explanation: self._auto_parse_note_output(r, e))
                     break
         else:  # Single-field mode
             for row in range(self.table.rowCount()):
@@ -2749,6 +2781,53 @@ class UpdateOmniPromptDialog(QDialog):
                             f"Single-field: Auto-send is off for note {note.id}."
                         )
                     break
+    
+    def _auto_parse_note_output(self, row: int, explanation: str):
+        """Auto-parse a single note's raw output when it reaches 100% progress."""
+        if not self.multi_field_mode or not self.parser:
+            return
+        
+        if not hasattr(self, 'selected_field_checkboxes'):
+            return
+        
+        # Get selected fields
+        selected_fields = []
+        for field_name, checkbox in self.selected_field_checkboxes.items():
+            if checkbox.isChecked():
+                selected_fields.append(field_name)
+        
+        if not selected_fields:
+            return
+        
+        # Ensure table has correct columns
+        if self.table.columnCount() != 2 + len(selected_fields):
+            self.table.setColumnCount(2 + len(selected_fields))
+            headers = ["Progress", "Raw Output"] + selected_fields
+            self.table.setHorizontalHeaderLabels(headers)
+            
+            # Adjust column widths
+            self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(0, 80)
+            self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            for i in range(2, self.table.columnCount()):
+                self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+                self.table.setColumnWidth(i, 150)
+        
+        # Parse with current parser
+        fields = self.parser.parse(explanation, selected_fields)
+        
+        # Update table cells for selected fields
+        for field_name, content in fields.items():
+            if field_name in selected_fields:
+                # Find column index for this field
+                col_index = selected_fields.index(field_name) + 2
+                
+                # Create or update cell
+                if self.table.item(row, col_index) is None:
+                    self.table.setItem(row, col_index, QTableWidgetItem())
+                self.table.item(row, col_index).setText(content)
+        
+        logger.info(f"Auto-parsed note output for row {row}")
 
     def stop_processing(self):
         if self.worker:
@@ -3483,6 +3562,91 @@ class UpdateOmniPromptDialog(QDialog):
         """Helper method to update start_processing to use custom instructions."""
         # This method will be called to ensure start_processing uses custom instructions
         pass
+    
+    def parse_prompt_for_field_names(self):
+        """Extract field names from prompt text and update checkbox states."""
+        if not self.multi_field_mode:
+            safe_show_info("Enable multi-field mode first.")
+            return
+        
+        prompt_text = self.prompt_edit.toPlainText()
+        if not prompt_text.strip():
+            safe_show_info("Prompt is empty.")
+            return
+        
+        import re
+        
+        # Extract field names from code blocks: ```FieldName\n
+        code_block_pattern = r"```\s*([^`\n]+?)\s*\n"
+        code_block_fields = re.findall(code_block_pattern, prompt_text, re.DOTALL)
+        
+        # Extract field names from plain text lines that look like field names
+        # Look for lines that are not full sentences (no ending punctuation, not too long)
+        plain_text_fields = []
+        lines = prompt_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            # Skip empty lines, lines with code block markers, lines that are too long (>100 chars)
+            if not line or '```' in line or len(line) > 100:
+                continue
+            # Look for lines that appear to be field names (capitalized, not ending with punctuation)
+            if (line[0].isupper() if line else False) and not line.endswith(('.', '!', '?', ':', ';', ',')):
+                # Check if it looks like a sentence (contains common sentence words)
+                sentence_indicators = [' the ', ' a ', ' an ', ' is ', ' are ', ' was ', ' were ', ' in ', ' on ', ' at ']
+                if not any(indicator in line.lower() for indicator in sentence_indicators):
+                    plain_text_fields.append(line)
+        
+        # Combine and deduplicate field names
+        extracted_fields = set()
+        for field in code_block_fields:
+            field = field.strip()
+            if field:
+                extracted_fields.add(field)
+        for field in plain_text_fields:
+            field = field.strip()
+            if field:
+                extracted_fields.add(field)
+        
+        if not extracted_fields:
+            safe_show_info("No field names found in prompt. Try using 'Insert Field Template' button.")
+            return
+        
+        # Filter extracted fields to only those that exist in note model
+        fields_in_note_model = set(self.target_note_fields)  # These are fields from the note model
+        fields_in_prompt_and_model = []
+        fields_in_prompt_not_in_model = []
+        
+        for field in extracted_fields:
+            if field in fields_in_note_model:
+                fields_in_prompt_and_model.append(field)
+            else:
+                fields_in_prompt_not_in_model.append(field)
+        
+        # Show warning for fields in prompt but not in note model (once per session)
+        if fields_in_prompt_not_in_model and not self.field_warning_shown:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Field Warning")
+            msg.setText(f"The following fields in your prompt don't exist in the note model: {', '.join(sorted(fields_in_prompt_not_in_model))}.")
+            msg.setInformativeText("These may be formatting examples. They will be ignored during processing.")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            self.field_warning_shown = True
+        
+        # Update checkbox states (don't delete any checkboxes)
+        # Check fields found in prompt AND in note model
+        # Uncheck fields in note model but NOT found in prompt
+        for field_name, checkbox in self.selected_field_checkboxes.items():
+            if field_name in fields_in_prompt_and_model:
+                checkbox.setChecked(True)
+            else:
+                checkbox.setChecked(False)
+        
+        # Show success message
+        if fields_in_prompt_and_model:
+            safe_show_info(f"Found {len(fields_in_prompt_and_model)} field(s) in prompt that exist in note model: {', '.join(sorted(fields_in_prompt_and_model))}. Checkboxes updated.")
+        else:
+            safe_show_info("No fields from prompt exist in note model. All checkboxes unchecked.")
 
 # ----------------------------------------------------------------
 # ManagePromptsDialog
