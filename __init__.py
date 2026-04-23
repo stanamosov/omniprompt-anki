@@ -254,6 +254,9 @@ def save_prompt_settings(settings: dict) -> None:
 class CodeBlockParser:
     """Simple parser for code blocks ```FieldName\nContent``` with JSON fallback."""
     
+    # Pattern for parsing multi-field output
+    MULTI_FIELD_PATTERN = r"```\s*([^`\n]+?)\s*(?:\\n|\n)([\s\S]*?)\s*```"
+    
     def __init__(self, target_note_fields: list = None):
         self.target_note_fields = target_note_fields or []
 
@@ -274,8 +277,7 @@ class CodeBlockParser:
         
         # Enhanced regex for ```FieldName\nContent``` that handles both actual newlines and escaped \n
         # (?:\\n|\n) matches either literal backslash-n or actual newline character
-        block_pattern = r"```\s*([^`\n]+?)\s*(?:\\n|\n)([\s\S]*?)\s*```"
-        blocks = re.findall(block_pattern, text, re.DOTALL | re.UNICODE)
+        blocks = re.findall(self.MULTI_FIELD_PATTERN, text, re.DOTALL | re.UNICODE)
         
         fields = {}
         for label, content in blocks:
@@ -2150,10 +2152,6 @@ class UpdateOmniPromptDialog(QDialog):
 
         total_parsed = 0
         for row in selected_rows:
-            # In multi-field mode, generated rows are even rows (0, 2, 4...)
-            if row % 2 == 1:
-                row -= 1  # Convert to generated row
-            
             raw_item = self.table.item(row, 1)  # Raw output column
             if not raw_item:
                 continue
@@ -2642,66 +2640,70 @@ class UpdateOmniPromptDialog(QDialog):
         if self.multi_field_mode:
             # Simplified: single row per note
             self.table.setRowCount(len(note_prompts))
+            
+            # Determine selected fields and set up columns ONCE before the loop
+            selected_fields = []
+            if hasattr(self, 'selected_field_checkboxes'):
+                for field_name, checkbox in self.selected_field_checkboxes.items():
+                    if checkbox.isChecked():
+                        selected_fields.append(field_name)
+                
+                # Validate that selected fields exist in note model
+                if selected_fields and self.notes:
+                    first_note = self.notes[0]
+                    model = mw.col.models.get(first_note.mid)
+                    if model:
+                        note_fields = mw.col.models.field_names(model)
+                        invalid_fields = [f for f in selected_fields if f not in note_fields]
+                        if invalid_fields:
+                            # Show warning once per session
+                            if not self.field_warning_shown:
+                                msg = QMessageBox(self)
+                                msg.setIcon(QMessageBox.Icon.Warning)
+                                msg.setWindowTitle("Field Warning")
+                                msg.setText(f"The following fields in your prompt don't exist in the note model: {', '.join(invalid_fields)}.")
+                                msg.setInformativeText("These may be formatting examples. They will be ignored during processing.")
+                                msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+                                msg.setDefaultButton(QMessageBox.StandardButton.Ok)
+                                
+                                result = msg.exec()
+                                if result == QMessageBox.StandardButton.Cancel:
+                                    return  # User cancelled
+                                
+                                self.field_warning_shown = True
+                            
+                            # Filter out invalid fields from selected_fields
+                            selected_fields = [f for f in selected_fields if f in note_fields]
+            
+            # Set table columns: Progress, Raw Output, selected fields...
+            if selected_fields:
+                if self.table.columnCount() != 2 + len(selected_fields):
+                    self.table.setColumnCount(2 + len(selected_fields))
+                    headers = ["Progress", "Raw Output"] + selected_fields
+                    self.table.setHorizontalHeaderLabels(headers)
+                    
+                    # Adjust column widths
+                    self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+                    self.table.setColumnWidth(0, 80)
+                    self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+                    for i in range(2, self.table.columnCount()):
+                        self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+                        self.table.setColumnWidth(i, 150)
+            else:
+                # Fallback: all fields
+                if self.table.columnCount() != 3:
+                    self.table.setColumnCount(3)
+                    self.table.setHorizontalHeaderLabels(["Progress", "Original", "Generated"])
+            
+            # Now populate rows with note data
             for row, (note, _) in enumerate(note_prompts):
                 progress_item = QTableWidgetItem("0%")
                 progress_item.setData(Qt.ItemDataRole.UserRole, note.id)
                 self.table.setItem(row, 0, progress_item)
+                logger.info(f"start_processing: Assigned note {note.id} to row {row}")
                 
                 # Raw output column
                 self.table.setItem(row, 1, QTableWidgetItem(""))
-                
-                # Create columns for selected fields only
-                if hasattr(self, 'selected_field_checkboxes'):
-                    selected_fields = []
-                    for field_name, checkbox in self.selected_field_checkboxes.items():
-                        if checkbox.isChecked():
-                            selected_fields.append(field_name)
-                    
-                    # Validate that selected fields exist in note model
-                    if selected_fields and self.notes:
-                        first_note = self.notes[0]
-                        model = mw.col.models.get(first_note.mid)
-                        if model:
-                            note_fields = mw.col.models.field_names(model)
-                            invalid_fields = [f for f in selected_fields if f not in note_fields]
-                            if invalid_fields:
-                                # Show warning once per session
-                                if not self.field_warning_shown:
-                                    msg = QMessageBox(self)
-                                    msg.setIcon(QMessageBox.Icon.Warning)
-                                    msg.setWindowTitle("Field Warning")
-                                    msg.setText(f"The following fields in your prompt don't exist in the note model: {', '.join(invalid_fields)}.")
-                                    msg.setInformativeText("These may be formatting examples. They will be ignored during processing.")
-                                    msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-                                    msg.setDefaultButton(QMessageBox.StandardButton.Ok)
-                                    
-                                    result = msg.exec()
-                                    if result == QMessageBox.StandardButton.Cancel:
-                                        return  # User cancelled
-                                    
-                                    self.field_warning_shown = True
-                                
-                                # Filter out invalid fields from selected_fields
-                                selected_fields = [f for f in selected_fields if f in note_fields]
-                    
-                    # Set table columns: Progress, Raw Output, selected fields...
-                    if self.table.columnCount() != 2 + len(selected_fields):
-                        self.table.setColumnCount(2 + len(selected_fields))
-                        headers = ["Progress", "Raw Output"] + selected_fields
-                        self.table.setHorizontalHeaderLabels(headers)
-                        
-                        # Adjust column widths
-                        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-                        self.table.setColumnWidth(0, 80)
-                        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-                        for i in range(2, self.table.columnCount()):
-                            self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
-                            self.table.setColumnWidth(i, 150)
-                else:
-                    # Fallback: all fields
-                    if self.table.columnCount() != 3:
-                        self.table.setColumnCount(3)
-                        self.table.setHorizontalHeaderLabels(["Progress", "Original", "Generated"])
         else:
             # Original single-field mode: one row per note
             self.table.setRowCount(len(note_prompts))
@@ -2762,24 +2764,38 @@ class UpdateOmniPromptDialog(QDialog):
         auto_send = self.manager.config.get("AUTO_SEND_TO_CARD", True)
 
         if self.multi_field_mode:
-            # Find the generated row (even rows) for this note
-            for row in range(0, self.table.rowCount(), 2):
+            # Find the generated row for this note
+            logger.info(f"update_note_result: Searching for note {note.id} in {self.table.rowCount()} rows")
+            found = False
+            for row in range(self.table.rowCount()):
                 progress_item = self.table.item(row, 0)
-                if (
-                    progress_item
-                    and progress_item.data(Qt.ItemDataRole.UserRole) == note.id
-                ):
-                    progress_item.setText("100%")
-                    self.table.item(row, 1).setText(
-                        explanation
-                    )  # Generated content in column 1
-                    logger.info(
-                        f"Multi-field: Stored raw explanation for note {note.id}."
-                    )
-                    
-                    # Auto-parse the raw output for this note with 100ms delay
-                    QTimer.singleShot(100, lambda r=row, e=explanation: self._auto_parse_note_output(r, e))
-                    break
+                if progress_item:
+                    stored_id = progress_item.data(Qt.ItemDataRole.UserRole)
+                    logger.debug(f"  Row {row}: stored_id={stored_id}, note.id={note.id}, type(stored_id)={type(stored_id)}, type(note.id)={type(note.id)}")
+                    # Handle potential type mismatches
+                    if stored_id == note.id:
+                        progress_item.setText("100%")
+                        self.table.item(row, 1).setText(
+                            explanation
+                        )  # Generated content in column 1
+                        logger.info(
+                            f"Multi-field: Stored raw explanation for note {note.id}."
+                        )
+                        
+                        # Auto-parse the raw output for this note with 100ms delay
+                        QTimer.singleShot(100, lambda r=row, e=explanation: self._auto_parse_note_output(r, e))
+                        found = True
+                        break
+            if not found:
+                logger.warning(f"update_note_result: Could not find row for note {note.id}")
+                # Debug: print all stored IDs
+                stored_ids = []
+                for row in range(self.table.rowCount()):
+                    progress_item = self.table.item(row, 0)
+                    if progress_item:
+                        stored_id = progress_item.data(Qt.ItemDataRole.UserRole)
+                        stored_ids.append(stored_id)
+                logger.warning(f"update_note_result: Available stored IDs: {stored_ids}")
         else:  # Single-field mode
             for row in range(self.table.rowCount()):
                 original_item = self.table.item(row, 1)
@@ -2910,8 +2926,8 @@ class UpdateOmniPromptDialog(QDialog):
         return self.manager.generate_ai_response(prompt, stream_progress_callback)
 
     def update_progress_cell(self, note_index: int, pct: int):
-        # In multi-field mode, progress is on the 'generated' row (even rows)
-        row_index = note_index * 2 if self.multi_field_mode else note_index
+        # Single row per note in both modes now
+        row_index = note_index
         item = self.table.item(row_index, 0)
         if item:
             item.setText(f"{pct}%")
@@ -2943,7 +2959,7 @@ class UpdateOmniPromptDialog(QDialog):
             total_notes = 0
             
             # First pass: count mismatches
-            for row in range(0, self.table.rowCount(), 2):
+            for row in range(self.table.rowCount()):
                 progress_item = self.table.item(row, 0)
                 if not progress_item:
                     continue
@@ -2980,7 +2996,7 @@ class UpdateOmniPromptDialog(QDialog):
             saved_count = 0
             skipped_fields_total = 0
             
-            for row in range(0, self.table.rowCount(), 2):
+            for row in range(self.table.rowCount()):
                 progress_item = self.table.item(row, 0)
                 if not progress_item:
                     continue
@@ -3102,7 +3118,7 @@ class UpdateOmniPromptDialog(QDialog):
         all_fields = set()
         note_field_maps = []
         note_models = {}  # Store note_id -> model for consistency check
-        for row in range(0, self.table.rowCount(), 2):
+        for row in range(self.table.rowCount()):
             explanation = (
                 self.table.item(row, 1).text() if self.table.item(row, 1) else ""
             )
@@ -3524,10 +3540,9 @@ class UpdateOmniPromptDialog(QDialog):
         # Determine which rows to parse
         rows_to_parse = []
         if all_rows:
-            rows_to_parse = list(range(0, self.table.rowCount(), 2))  # Generated rows
+            rows_to_parse = list(range(self.table.rowCount()))  # All rows (single row per note)
         else:
-            selected_rows = [idx.row() for idx in self.table.selectionModel().selectedRows()]
-            rows_to_parse = [r for r in selected_rows if r % 2 == 0]  # Only generated rows
+            rows_to_parse = [idx.row() for idx in self.table.selectionModel().selectedRows()]
         
         if not rows_to_parse:
             safe_show_info("No rows selected for parsing.")
