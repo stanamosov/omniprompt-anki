@@ -2231,32 +2231,26 @@ class UpdateOmniPromptDialog(QDialog):
         # Shortcut for Save Current Prompt (Ctrl+S)
         sc_save = QShortcut(QKeySequence("Ctrl+S"), self)
         sc_save.activated.connect(self.save_current_prompt)
-        sc_save.setToolTip("Save Current Prompt")
 
         # Shortcut for Send Data To Card (Ctrl+D)
         sc_send = QShortcut(QKeySequence("Ctrl+D"), self)
         sc_send.activated.connect(self.save_manual_edits)
-        sc_send.setToolTip("Send Data To Card")
 
         # Shortcut for Insert Field Template (Ctrl+I)
         sc_insert = QShortcut(QKeySequence("Ctrl+I"), self)
         sc_insert.activated.connect(self.import_fields_to_prompt)
-        sc_insert.setToolTip("Import fields into prompt")
 
         # Shortcut for Parse Fields on Field Config tab (Ctrl+P)
         sc_parse = QShortcut(QKeySequence("Ctrl+P"), self)
         sc_parse.activated.connect(self.parse_all_rows)
-        sc_parse.setToolTip("Parse Fields")
 
         # Shortcut for Parse Prompt on Field Config tab (Ctrl+Shift+P)
         sc_parse_prompt = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
         sc_parse_prompt.activated.connect(self.parse_prompt_for_field_names)
-        sc_parse_prompt.setToolTip("Parse Prompt for fields")
 
         # Shortcut to Stop processing (Escape)
         sc_stop = QShortcut(QKeySequence("Escape"), self)
         sc_stop.activated.connect(self.stop_processing)
-        sc_stop.setToolTip("Stop processing")
 
         # Hidden widgets for backward compatibility (used by some methods)
         self.undo_button = QPushButton("Undo")
