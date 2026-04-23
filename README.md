@@ -13,11 +13,15 @@
 ✅ **Local Model Support** – Use Ollama or LM Studio for private, offline AI processing  
 ✅ **Custom Prompts** – Save and reuse prompt templates with field placeholders.  
 ✅ **Batch Processing** – Process multiple notes simultaneously with real-time progress tracking.  
-✅ **Multi-field Output** – Parse AI responses into multiple note fields automatically.  
-✅ **Flexible Field Selection** – Choose which field to update dynamically.  
+✅ **Multi-field Output** – Parse AI responses into multiple note fields automatically with confidence scoring, auto-mapping, and field mismatch handling.  
+✅ **Flexible Field Selection** – Choose which field to update dynamically, with Select All/None and auto-parse from prompt.  
+✅ **Custom Models per Provider** – Add, remove, and manage custom model names for any AI provider.  
+✅ **Connection Testing** – Test API connectivity and fetch available models for local providers (Ollama/LM Studio).  
 ✅ **Auto-Save** – Generated content can be automatically saved to selected fields.  
 ✅ **Formatting Cleanup** – Use AI to clean or modify existing text formatting.  
-✅ **Advanced Settings** – Fine-tune timeout, delay, API options, and GPT-5.4 specific settings.  
+✅ **OpenAI API Version Selector** – Choose between modern (GPT-5), legacy (Chat Completions), or auto-detect based on model name.  
+✅ **GPT-5.4 Settings** – Fine-tune reasoning effort and verbosity for GPT-5.4 models.  
+✅ **Advanced Settings** – Fine-tune timeout, delay, debug mode, and filter mode.  
 ✅ **Keyboard Shortcuts** – Ctrl+Shift+O to open, Ctrl+Return to start, Ctrl+S/D/I/P shortcuts for common actions.
 
 ---
@@ -44,8 +48,9 @@ The user guide covers:
 - **Setup & Configuration** (all AI providers)
 - **User Interface Walkthrough**
 - **Single-field & Multi-field Processing**
+- **Custom Models & Connection Testing**
 - **Prompt Templates & Management**
-- **Advanced Features** (Filter Mode, Debug Mode, Auto-send)
+- **Advanced Features** (Filter Mode, Debug Mode, Auto-send, GPT-5.4 Settings)
 - **Keyboard Shortcuts**
 - **Troubleshooting & Logging**
 
@@ -67,19 +72,28 @@ The user guide covers:
 ---
 
 ## 🛠️ Roadmap
-### **✅ Completed in v1.1.5**
-* [x] Added Ollama local model support
-* [x] Added LM Studio local model support  
-* [x] Added GPT-5.4 model support with reasoning effort/verbosity settings
-* [x] Added Auto-send to card feature
-* [x] Enhanced multi-field output parsing
-* [x] Improved prompt template management
-* [x] Added custom model support for all providers
+### **✅ Completed**
+* [x] Full multi-field output with confidence scoring, auto-parsing, and field mapping
+* [x] Custom models per provider (+/- buttons)
+* [x] Connection testing with model fetching for Ollama/LM Studio
+* [x] OpenAI API version selector (modern, legacy, auto)
+* [x] GPT-5.4 reasoning effort and verbosity settings
+* [x] Note type consistency checking with filtering dialog
+* [x] Field mismatch detection with auto-mapping dialog
+* [x] Parse Prompt button to auto-select fields from prompt text
+* [x] Global progress bar for batch processing (>10 notes)
+* [x] Ollama and LM Studio local model support
+* [x] Auto-send to card feature
+* [x] Prompt template management (save, edit, delete)
+* [x] Append mode for multi-field and single-field output
+* [x] xAI (Grok) provider support
 
 ### **🚀 Planned**
 - [ ] Support for more AI models and providers
 - [ ] Enhanced template variable system
 - [ ] Additional output formatting options
+- [ ] Drag-and-drop field mapping
+- [ ] Preset configurations per note type
 
 ---
 

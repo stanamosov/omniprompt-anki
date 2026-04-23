@@ -1,4 +1,4 @@
-# OmniPrompt Anki User Guide
+# OmniPrompt Anki User Guide — v1.1.5
 
 ## Table of Contents
 - [Installation](#installation)
@@ -28,7 +28,10 @@
   - [xAI (Grok)](#xai-grok)
   - [Ollama (Local)](#ollama-local)
   - [LM Studio (Local)](#lm-studio-local)
+  - [OpenAI API Version Selector](#openai-api-version-selector)
   - [GPT-5.4 Specific Settings](#gpt-54-specific-settings)
+- [Custom Models per Provider](#custom-models-per-provider)
+- [Connection Testing](#connection-testing)
 - [Prompt Templates & Management](#prompt-templates--management)
   - [Using Field Placeholders](#using-field-placeholders)
   - [Saving and Loading Prompts](#saving-and-loading-prompts)
@@ -36,8 +39,8 @@
 - [Advanced Settings](#advanced-settings-1)
   - [API Delay](#api-delay)
   - [Timeout](#timeout)
-  - [DeepSeek Streaming](#deepseek-streaming)
-- [Keyboard Shortcuts](#keyboard-shortcuts-1)
+  - [Debug Mode / Filter Mode](#debug-mode--filter-mode)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Troubleshooting & Logging](#troubleshooting--logging)
 - [Examples of Use](#examples-of-use)
   - [Language Translation](#language-translation)
@@ -96,11 +99,18 @@ Open Anki and go to **Tools → OmniPrompt-Anki → Settings**.
 ![Settings](user_interface/settings.jpg)
 
 ### Settings Menu
-Configure API Provider (OpenAI, Gemini, etc.), API Key, Model, Temperature, Max Tokens, and toggles like Debug Mode and Filter Mode.
+Configure API Provider (OpenAI, Gemini, etc.), API Key, Model, Temperature, Max Tokens, and manage custom models with **+** / **−** buttons. Test connection to your provider. Configure provider-specific options (OpenAI API version, reasoning effort, DeepSeek streaming).
 ![Settings](user_interface/settings.jpg)
 
+The settings dialog now includes:
+- **Model +/− buttons**: Add/remove custom model names for any provider
+- **URL/Base URL field**: Edit the API endpoint URL (for cloud providers) or base URL (for local providers)
+- **Test Connection button**: Verify API connectivity and fetch available models for Ollama/LM Studio
+- **OpenAI-specific settings** (shown only for OpenAI): API Version selector, Reasoning Effort, Verbosity
+- **DeepSeek-specific settings** (shown only for DeepSeek): Streaming checkbox
+
 ### Advanced Settings
-Click **Advanced Settings** in the configuration window to modify API Delay, Timeout, and DeepSeek streaming behavior.
+Click **Advanced Settings** in the configuration window to modify API Delay, Timeout, Debug Mode, and Filter Mode.
 ![Advanced Settings](user_interface/advanced_settings.jpg)
 
 ### Manage Saved Prompts
@@ -112,7 +122,7 @@ Right-click in the Anki Browser to update notes using AI.
 ![Context Menu](user_interface/context_menu.jpg)
 
 ### Batch Processing Window
-Track generation progress and view original content alongside AI output during bulk updates.
+Track generation progress and view original content alongside AI output during bulk updates. For batches larger than 10 notes, a **global progress bar** appears at the top of the table for high-level progress tracking.
 ![Batch Processing](user_interface/main_ui.jpg)
 
 ---
@@ -134,44 +144,46 @@ Track generation progress and view original content alongside AI output during b
 The standard workflow where AI output is saved to a single field. You can choose to append to existing content or replace it.
 
 ### Multi-field Output
-OmniPrompt can parse AI responses into multiple fields automatically. Enable "Multi-field output" in the Update with OmniPrompt dialog. When enabled, the add-on will detect structured output and map content to the appropriate note fields.
+OmniPrompt can parse AI responses into multiple fields automatically with **confidence scoring** and **smart field mapping**. Enable "Multi-field output" in the Update with OmniPrompt dialog.
 
 **How to Use Multi-field Mode:**
-1. **Enable multi-field mode**: Check "Multi-field output" in the Update with OmniPrompt dialog
-2. **Configure fields**: Switch to the "Field Configuration" tab to select which fields to update
-3. **Craft your prompt**: Include field placeholders (e.g., `{Front}`) and specify the desired output format. Use the "Insert Field Template" button to quickly insert all available field names into your prompt.
-4. **Start processing**: The AI response will be automatically parsed into selected fields
-5. **Review and save**: Check the parsed fields in the table, make edits if needed, then save to notes
 
-**Supported Output Formats:**
-- **Code blocks**: ```FieldName\nContent``` (recommended for most AI models)
-- **XML-like tags**: `<FieldName>Content</FieldName>`
-- **JSON**: `{"Field1": "content", "Field2": "content"}` (enable JSON mode for structured providers)
+1. **Enable multi-field mode**: Check "Multi-field output" in the Update with OmniPrompt dialog
+2. **Configure fields**: Switch to the **"Field Configuration"** tab to select which fields to update. Use **Select All / Select None** buttons to quickly toggle field selection
+3. **Parse prompt fields**: Click **"Parse Prompt"** to automatically extract field names from your prompt text and update checkbox selection
+4. **Craft your prompt**: Include field placeholders (e.g., `{Front}`) and specify the desired output format. Use the **"Insert Field Template"** button to quickly insert all available field names as code block templates
+5. **Start processing**: As each note completes, the AI response is **auto-parsed** into selected fields with confidence-based color coding:
+   - 🟢 Green background = High confidence (>80%)
+   - 🟡 Yellow background = Medium confidence (>50%)
+   - 🔴 Red background = Low confidence (≤50%)
+6. **Review and save**: Check the parsed fields, make edits if needed, then save to notes
+
+**Supported Output Format:**
+- **Code blocks**: `` `FieldName\nContent` `` (recommended — works with all AI models)
 
 **In-App Guidance:**
-- **Tooltip**: Hover over the multi-field checkbox for detailed instructions
-- **Pro tip**: Shows example prompt format for multi-field output
-- **Test parse button**: Test parsing on a single note before processing the entire batch
-- **Available fields**: Shows fields from your note model for reference
+- **Format reminder label**: Shows the expected code block format at the top of the Field Configuration tab
+- **Note type status**: Displays the note type of selected notes at the top of the dialog
+- **Multiple note type detection**: If notes of different types are selected, a filtering dialog offers to restrict processing to the most common type
 
-**Advanced Features:**
-- **JSON mode**: For structured providers like OpenAI/Anthropic - provides more reliable parsing
-- **Auto-append format instructions**: Automatically adds formatting guidance to your prompt
-- **Field mismatch handling**: Detects when parsed fields don't match note fields and offers auto-mapping
-- **Note type consistency check**: Warns when processing notes of different types
-- **Append mode**: Append AI-generated content to existing field content with separator
-- **Hide raw output**: Toggle to hide/show the raw AI output column for better focus
+**Advanced Multi-field Features:**
+- **Confidence scoring**: Each parsed field gets a confidence score (0.0–1.0) based on match quality with available note fields
+- **Auto-parsing**: Results are automatically parsed into field columns as each note completes
+- **Field mismatch handling**: When parsed fields don't match note fields, a dialog offers:
+  - **Auto-map similar names** — fuzzy matching to find closest field names
+  - **Save only exact matches** — skip unmatched fields
+  - **Manual map** — manually map fields (future enhancement)
+- **Append mode**: When enabled (via the "Append Output" checkbox even in multi-field mode), AI content is appended to existing field content with a separator
+- **Parse prompt button**: Extracts field names from ```` ```FieldName\n ``` `` patterns in your prompt and auto-selects matching checkboxes
+- **Global progress bar**: Appears automatically when processing more than 10 notes
 
-**Tips for Power Users:**
-- Use `{Field}` placeholders in your prompt to reference note fields
-- Include explicit format instructions in your prompt for best results
-- Test small batches first with the "Test Parse on 1 Note" button
-- Use JSON mode with structured providers like GPT-5.4 for maximum reliability
-- The table will automatically expand to accommodate all detected fields
-- For wide tables, use horizontal scrolling to view all fields
+**Tips for Best Results:**
+- Include explicit format instructions in your prompt (e.g., "Output each section in a code block with the field name")
+- Test with a single note first before processing large batches
+- Use the "Insert Field Template" button to get the exact code block format into your prompt
 
 ### Batch Processing
-Process multiple notes simultaneously with real-time progress tracking. Each note's status is displayed in the progress table.
+Process multiple notes simultaneously with real-time progress tracking. Each note's status is displayed in the progress table. For batches with more than 10 notes, a **global progress bar** appears at the top for overall progress visibility.
 
 ### Filter Mode
 When enabled, OmniPrompt will skip notes where the output field is already filled. This prevents overwriting existing content.
@@ -190,19 +202,20 @@ When enabled, generated content is automatically saved to the card without requi
 - **API Key**: Required from [OpenAI Platform](https://platform.openai.com/api-keys)
 - **Supported Models**: `gpt-4o-mini`, `gpt-3.5-turbo`, `gpt-4o`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5`, `o3-mini`, `o1-mini`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`
 - **Custom Models**: Add any OpenAI-compatible model via the "+" button in settings
+- **API Version**: Choose between modern (GPT-5 Responses API), legacy (Chat Completions), or auto-detect
 
 ### DeepSeek
 - **API Key**: Required from [DeepSeek Platform](https://platform.deepseek.com/api_keys)
 - **Supported Models**: `deepseek-chat`, `deepseek-reasoner`
-- **Streaming**: Optional real-time response streaming
+- **Streaming**: Optional real-time response streaming (enable in provider settings)
 
 ### Google Gemini
 - **API Key**: Required from [Google AI Studio](https://makersuite.google.com/app/apikey)
-- **Supported Models**: `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-2.0-flash`, `gemini-2.0-flash-thinking`
+- **Supported Models**: `gemini-pro`, `gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-2.0-flash`, `gemini-2.0-flash-thinking`
 
 ### Anthropic (Claude)
 - **API Key**: Required from [Anthropic Console](https://console.anthropic.com/)
-- **Supported Models**: `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307`
+- **Supported Models**: `claude-opus-4-latest`, `claude-sonnet-4-latest`, `claude-haiku-3.5-latest`
 
 ### xAI (Grok)
 - **API Key**: Required from [xAI Platform](https://console.x.ai/)
@@ -210,28 +223,80 @@ When enabled, generated content is automatically saved to the card without requi
 
 ### Ollama (Local)
 - **No API Key Required**
-- **Base URL**: `http://localhost:11434` (default)
+- **Base URL**: `http://localhost:11434` (default, editable)
 - **Supported Models**: Any Ollama model (`llama3.2`, `llama3.1`, `llama2`, `mistral`, `mixtral`, `codellama`, `phi`, `gemma`, `qwen2.5`, etc.)
 - **Requirement**: Ollama must be running locally
+- **Connection Testing**: Use "Test Connection" to verify connectivity and **fetch available models** directly from your Ollama instance
 
 ### LM Studio (Local)
 - **No API Key Required**
-- **Base URL**: `http://localhost:1234` (default)
+- **Base URL**: `http://localhost:1234` (default, editable)
 - **Supported Models**: Any model loaded in LM Studio
 - **Requirement**: LM Studio must be running with server enabled
+- **Connection Testing**: Use "Test Connection" to verify connectivity and **fetch available models** from your LM Studio instance
+
+### OpenAI API Version Selector
+When using OpenAI as your provider, you can choose which API version to use via a dropdown in the provider settings:
+
+| Option | Description |
+|--------|-------------|
+| **modern** | Use the new **Responses API** (required for GPT-5 / GPT-5.4 models) |
+| **legacy** | Use the classic **Chat Completions API** (for GPT-4 and older models) |
+| **auto** | Automatically select based on the model name (recommended) |
+
+The **auto** mode detects GPT-5 models (any model containing `gpt-5`, `gpt-5.4`, etc.) and uses the modern API, while all other models use the legacy Chat Completions API.
 
 ### GPT-5.4 Specific Settings
-For GPT-5.4 models (`gpt-5.4`, `gpt-5.4-pro`, etc.), additional settings are available:
-- **Reasoning Effort**: Controls how much "thinking" the model does before responding (`none`, `low`, `medium`, `high`, `xhigh`)
-- **Verbosity**: Controls response detail level (`low`, `medium`, `high`)
-- **Note**: GPT-5.4 models don't support temperature parameter
+For GPT-5.4 models (`gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`), additional settings are available:
+
+- **Reasoning Effort**: Controls how much "thinking" the model does before responding:
+  - `none` — Standard response, no extra reasoning
+  - `low` — Minimal reasoning
+  - `medium` — Moderate reasoning
+  - `high` — Extensive reasoning
+  - `xhigh` — Maximum reasoning
+
+- **Verbosity**: Controls response detail level:
+  - `low` — Concise responses
+  - `medium` — Balanced (default)
+  - `high` — Detailed responses
+
+> **Note**: GPT-5.4 models do **not** support the `temperature` parameter. Verbosity and reasoning effort replace it for controlling output. Temperature is sent to the model only when using the legacy Chat Completions API.
+
+---
+
+## Custom Models per Provider
+You can add and remove custom model names for any AI provider directly from the Settings dialog:
+
+1. Select your desired **AI Provider**
+2. In the **Model** field, type or select a model name
+3. Click the **+** button to add it to the provider's custom models list
+4. Click the **−** button to remove it from custom models
+
+Custom models appear alongside the default model list in the dropdown and are persisted across sessions.
+
+> **Tip**: Use "Test Connection" with Ollama/LM Studio to automatically fetch and populate available models from your local instance.
+
+---
+
+## Connection Testing
+OmniPrompt provides a **Test Connection** button for every provider, accessible from the Settings dialog:
+
+1. Open **Tools → OmniPrompt-Anki → Settings**
+2. Select your AI provider
+3. Click **Test Connection** in the Provider Settings section
+4. View the result — green checkmark for success, red cross for failure
+
+**What happens during testing:**
+- **Cloud providers** (OpenAI, DeepSeek, Gemini, Anthropic, xAI): A minimal API request is made to verify your API key is valid
+- **Local providers** (Ollama, LM Studio): The base URL is pinged to verify the service is running. On success, available models are **automatically fetched** and added to your model dropdown
 
 ---
 
 ## Prompt Templates & Management
 
 ### Using Field Placeholders
-Use **any field** from your note type in prompts. Field names are **case-sensitive**. You can use **multiple fields** in your prompt and even use your **Output field** for input - this makes it possible to change formatting of existing fields!
+Use **any field** from your note type in prompts. Field names are **case-sensitive**. You can use **multiple fields** in your prompt and even use your **Output field** for input — this makes it possible to change formatting of existing fields!
 
 **Example Using Multiple Fields**:
 ```
@@ -278,10 +343,11 @@ Access these settings via **Tools → OmniPrompt → Settings → Advanced Setti
 Adds a short pause between consecutive requests to avoid rate limits. Recommended: 1-2 seconds for most providers.
 
 ### Timeout
-Adjusts how long the add-on waits for each API request to finish. Increase for slower connections or complex queries.
+Adjusts how long the add-on waits for each API request to finish. Increase for slower connections, complex queries, or larger token responses. Default: 30 seconds.
 
-### DeepSeek Streaming
-Enables partial message updates in real time for DeepSeek models. Provides visual feedback during generation.
+### Debug Mode / Filter Mode
+- **Debug Mode**: Show/hide processing popups and informational messages. Helpful for troubleshooting, but can be disabled for cleaner batch processing.
+- **Filter Mode**: When enabled, notes where the output field already contains content will be skipped. Useful for updating only empty fields without overwriting existing data.
 
 ---
 
@@ -309,7 +375,6 @@ A shortcut hint is also visible at the bottom of the dialog window for quick ref
 
 ---
 
-
 ## Troubleshooting & Logging
 
 OmniPrompt-Anki maintains a log file (**omniprompt_anki.log**) inside the add-ons folder to track API requests, responses, and potential errors. This helps with troubleshooting issues like API connection failures, timeouts, or unexpected responses. The log file is capped at **5MB**, with up to **two backups** to prevent excessive disk usage.
@@ -324,11 +389,13 @@ Common issues and solutions:
    - Check your internet connection
    - Verify API key is correct and has sufficient credits
    - Ensure the selected model is available for your account
+   - Use the **Test Connection** button in Settings to diagnose
 
 2. **Local Models Not Working (Ollama/LM Studio)**
    - Verify Ollama/LM Studio is running
    - Check base URL matches your local setup
    - Confirm model name is correct
+   - Use **Test Connection** to diagnose and auto-fetch available models
 
 3. **No Response from AI**
    - Increase timeout in Advanced Settings
@@ -338,6 +405,12 @@ Common issues and solutions:
 4. **Field Placeholders Not Working**
    - Ensure field names match exactly (case-sensitive)
    - Check that notes have values in the referenced fields
+
+5. **Multi-field Fields Not Parsing**
+   - Verify your prompt outputs the correct code block format: `` `FieldName\nContent` ``
+   - Try the "Insert Field Template" button to get the exact format
+   - Check the **Raw Output** column to see what the AI actually returned
+   - Use "Parse Fields" button to manually retry parsing
 
 ---
 
@@ -430,6 +503,9 @@ A: Via AnkiWeb (automatic updates) or manually update from Codeberg/GitHub.
 
 **Q: Can I contribute new features or report bugs?**
 A: Yes! See the [Contributing section](https://github.com/stanamosov/omniprompt-anki#-contributing) in the main README.
+
+**Q: What's new in v1.1.5?**
+A: Major improvements include: enhanced multi-field output with confidence scoring and auto-parsing, custom models per provider with +/- buttons, connection testing with model fetching for Ollama/LM Studio, OpenAI API version selector (modern/legacy/auto), GPT-5.4 reasoning effort and verbosity settings, note type consistency checking, field mismatch detection with auto-mapping, Parse Prompt button, and global progress bar for large batches.
 
 ---
 
