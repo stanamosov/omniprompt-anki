@@ -2039,6 +2039,9 @@ class UpdateOmniPromptDialog(QDialog):
         # Undo stack for parse operations
         self.undo_stack = []
         
+        # Snapshots for undoing auto-send changes to note fields
+        self.note_snapshots = {}
+        
         self.setup_ui()
 
     def setup_ui(self):
@@ -2073,6 +2076,12 @@ class UpdateOmniPromptDialog(QDialog):
         self.prompt_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.prompt_edit.setPlainText(self.manager.config.get("PROMPT", ""))
         prompt_tab_layout.addWidget(self.prompt_edit)
+
+        # Tip about referencing note fields in prompt
+        self.field_reference_tip = QLabel("💡 Tip: Use {FieldName} in your prompt to reference note fields")
+        self.field_reference_tip.setStyleSheet("color: #666; font-size: 11px; padding: 2px 0;")
+        self.field_reference_tip.setWordWrap(True)
+        prompt_tab_layout.addWidget(self.field_reference_tip)
 
         # Save Prompt
         self.save_prompt_button = QPushButton("Save Current Prompt")
@@ -2118,7 +2127,7 @@ class UpdateOmniPromptDialog(QDialog):
         self.auto_send_checkbox.stateChanged.connect(self.on_auto_send_checkbox_changed)
         prompt_tab_layout.addWidget(self.auto_send_checkbox)
 
-        # Start / Stop / Save Edits
+        # Start / Stop / Send to Card
         self.start_button = QPushButton("Start")
         self.start_button.setMinimumSize(80, 30)  # Make it slightly bigger
         self.stop_button = QPushButton("Stop")
@@ -2127,6 +2136,13 @@ class UpdateOmniPromptDialog(QDialog):
         prompt_tab_layout.addWidget(self.start_button)
         prompt_tab_layout.addWidget(self.stop_button)
         prompt_tab_layout.addWidget(self.save_changes_button)
+        
+        # Undo changes button (enabled only when auto-send is on)
+        self.undo_changes_button = QPushButton("Undo Send to Card")
+        self.undo_changes_button.setEnabled(self.auto_send_checkbox.isChecked())
+        self.undo_changes_button.clicked.connect(self.undo_auto_send_changes)
+        self.undo_changes_button.setToolTip("Revert all OmniPrompt changes made to note fields")
+        prompt_tab_layout.addWidget(self.undo_changes_button)
         
         # Add stretch to push everything up
         prompt_tab_layout.addStretch()
@@ -2161,13 +2177,6 @@ class UpdateOmniPromptDialog(QDialog):
         self.multi_field_field_selector.setLayout(self.field_selector_layout)
         self.multi_field_field_selector.hide()  # Hidden by default
         self.field_config_layout.addWidget(self.multi_field_field_selector)
-        
-        # Parse button
-        self.parse_all_button = QPushButton("Parse Fields")
-        self.parse_all_button.clicked.connect(self.parse_all_rows)
-        self.parse_all_button.setToolTip("Manually parse raw AI output into field columns for all notes (auto-parsing happens automatically when each note completes)")
-        self.parse_all_button.hide()  # Hidden by default
-        self.field_config_layout.addWidget(self.parse_all_button)
         
         self.field_config_layout.addStretch()
         
@@ -2239,10 +2248,6 @@ class UpdateOmniPromptDialog(QDialog):
         # Shortcut for Insert Field Template (Ctrl+I)
         sc_insert = QShortcut(QKeySequence("Ctrl+I"), self)
         sc_insert.activated.connect(self.import_fields_to_prompt)
-
-        # Shortcut for Parse Fields on Field Config tab (Ctrl+P)
-        sc_parse = QShortcut(QKeySequence("Ctrl+P"), self)
-        sc_parse.activated.connect(self.parse_all_rows)
 
         # Shortcut for Parse Prompt on Field Config tab (Ctrl+Shift+P)
         sc_parse_prompt = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
@@ -2377,6 +2382,9 @@ class UpdateOmniPromptDialog(QDialog):
             logger.exception("Failed to save auto-send to card setting:")
             if self.manager.config.get("DEBUG_MODE", False):
                 safe_show_info(f"Failed to save setting: {str(e)}")
+        # Enable undo button only when auto-send is checked
+        # (button will be re-enabled after processing completes with auto-send)
+        self.undo_changes_button.setEnabled(False)
 
     def load_prompts(self):
         prompts = load_prompt_templates()
@@ -2449,8 +2457,6 @@ class UpdateOmniPromptDialog(QDialog):
                 self.multi_field_field_selector.hide()
             
             # Hide parse buttons
-            if self.parse_all_button:
-                self.parse_all_button.hide()
             if self.parse_prompt_button:
                 self.parse_prompt_button.hide()
             
@@ -2510,7 +2516,6 @@ class UpdateOmniPromptDialog(QDialog):
         # Show field selector, parse buttons, and format reminder
         self.field_config_placeholder.hide()
         self.multi_field_field_selector.show()
-        self.parse_all_button.show()
         self.parse_prompt_button.show()
         self.format_reminder_label.show()
         
@@ -2854,6 +2859,15 @@ class UpdateOmniPromptDialog(QDialog):
                 self.table.setItem(row, 1, original_item)
                 self.table.setItem(row, 2, QTableWidgetItem(""))
 
+        # Snapshot current note field values before processing for undo functionality
+        self.note_snapshots = {}
+        for note, _ in note_prompts:
+            field_snapshot = {}
+            for field_name in note.keys():
+                field_snapshot[field_name] = note[field_name]
+            self.note_snapshots[note.id] = field_snapshot
+        self.undo_changes_button.setEnabled(False)
+        
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
 
@@ -3245,6 +3259,10 @@ class UpdateOmniPromptDialog(QDialog):
             if not auto_send:
                 message += " Press 'Send Data To Card' to save changes."
             safe_show_info(message)
+        
+        # Enable undo button if auto-send was on and we have snapshots
+        if auto_send and self.note_snapshots:
+            self.undo_changes_button.setEnabled(True)
 
     def parse_fields_for_all_rows(self, save_to_notes: bool = False):
         """Parse generated text for all notes into fields, updating the table layout.
@@ -3760,8 +3778,35 @@ class UpdateOmniPromptDialog(QDialog):
         
         # Update undo button state
         self.undo_button.setEnabled(bool(self.undo_stack))
+    
+    def undo_auto_send_changes(self):
+        """Undo all OmniPrompt changes made during the last processing run
+        by restoring note fields from snapshots taken before processing."""
+        if not self.note_snapshots:
+            self.undo_changes_button.setEnabled(False)
+            safe_show_info("No snapshots available to undo.")
+            return
         
-        safe_show_info(f"Undo applied to row {row//2 + 1}.")
+        restored_count = 0
+        for note_id, field_snapshot in self.note_snapshots.items():
+            try:
+                note = mw.col.get_note(note_id)
+                for field_name, field_value in field_snapshot.items():
+                    if field_name in note:
+                        note[field_name] = field_value
+                mw.col.update_note(note)
+                restored_count += 1
+            except Exception as e:
+                logger.exception(f"Failed to restore note {note_id}:")
+        
+        # Clear snapshots after restore
+        self.note_snapshots = {}
+        self.undo_changes_button.setEnabled(False)
+        
+        if restored_count > 0:
+            safe_show_info(f"Restored {restored_count} note(s) to pre-processing state.")
+        else:
+            safe_show_info("No notes were restored.")
     
     def update_start_processing_with_custom_instructions(self):
         """Helper method to update start_processing to use custom instructions."""
